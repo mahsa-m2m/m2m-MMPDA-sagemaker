@@ -17,7 +17,8 @@ import subprocess
 import tempfile
 import warnings
 import logging
-import traceback  
+import traceback 
+import mediapipe as mp
 
 
 
@@ -34,43 +35,43 @@ warnings.filterwarnings('ignore', category=UserWarning)
 warnings.filterwarnings('ignore', category=FutureWarning)
 warnings.filterwarnings('ignore', category=DeprecationWarning)
 
-# 2. Suppress TensorFlow/MediaPipe logs (must be set BEFORE importing mediapipe)
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # 0=all, 1=info, 2=warning, 3=error only
-os.environ['GLOG_minloglevel'] = '3'  # Google logging
-os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
+# # 2. Suppress TensorFlow/MediaPipe logs (must be set BEFORE importing mediapipe)
+# os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # 0=all, 1=info, 2=warning, 3=error only
+# os.environ['GLOG_minloglevel'] = '3'  # Google logging
+# os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 
-# 3. Suppress OpenCV/FFmpeg warnings
-os.environ['OPENCV_LOG_LEVEL'] = 'ERROR'
-os.environ['OPENCV_VIDEOIO_DEBUG'] = '0'
-os.environ['OPENCV_VIDEOIO_PRIORITY_FFMPEG'] = '0'
-cv2.setLogLevel(0)  # 0 = silent
+# # 3. Suppress OpenCV/FFmpeg warnings
+# os.environ['OPENCV_LOG_LEVEL'] = 'ERROR'
+# os.environ['OPENCV_VIDEOIO_DEBUG'] = '0'
+# os.environ['OPENCV_VIDEOIO_PRIORITY_FFMPEG'] = '0'
+# cv2.setLogLevel(0)  # 0 = silent
 
 
 # 4. Redirect stderr temporarily for library initialization
-class SuppressOutput:
-    def __enter__(self):
-        self.null_fds = [os.open(os.devnull, os.O_RDWR) for _ in range(2)]
-        self.save_fds = [os.dup(1), os.dup(2)]
-        os.dup2(self.null_fds[0], 1)
-        os.dup2(self.null_fds[1], 2)
-        return self
+# class SuppressOutput:
+#     def __enter__(self):
+#         self.null_fds = [os.open(os.devnull, os.O_RDWR) for _ in range(2)]
+#         self.save_fds = [os.dup(1), os.dup(2)]
+#         os.dup2(self.null_fds[0], 1)
+#         os.dup2(self.null_fds[1], 2)
+#         return self
 
-    def __exit__(self, *_):
-        os.dup2(self.save_fds[0], 1)
-        os.dup2(self.save_fds[1], 2)
-        for fd in self.null_fds + self.save_fds:
-            os.close(fd)
+#     def __exit__(self, *_):
+#         os.dup2(self.save_fds[0], 1)
+#         os.dup2(self.save_fds[1], 2)
+#         for fd in self.null_fds + self.save_fds:
+#             os.close(fd)
 
 
-# Import with suppression
-with SuppressOutput():
-    # 5. Suppress ABSL logging (MediaPipe uses this)
-    import absl.logging
+# # Import with suppression
+# with SuppressOutput():
+#     # 5. Suppress ABSL logging (MediaPipe uses this)
+#     import absl.logging
 
-    absl.logging.set_verbosity(absl.logging.ERROR)
-    absl.logging.set_stderrthreshold(absl.logging.ERROR)
+#     absl.logging.set_verbosity(absl.logging.ERROR)
+#     absl.logging.set_stderrthreshold(absl.logging.ERROR)
 
-    import mediapipe as mp
+#     import mediapipe as mp
 
 # Now import librosa with proper backend (without resampy dependency)
 # FIX: Use scipy resampler instead of resampy
@@ -167,6 +168,8 @@ class VideoDeceptionDataset(Dataset):
 
         # Don't initialize MediaPipe here - will be done per worker process
         self.face_mesh = None
+        self.face_mesh_initialized = False
+        self.mp_face_mesh = mp.solutions.face_mesh
 
         # Load from directory structure
         if data_root is not None:
@@ -176,22 +179,40 @@ class VideoDeceptionDataset(Dataset):
             self._load_from_annotation(annotation_file)
         else:
             raise ValueError("Either data_root or annotation_file must be provided")
-
+    
     def _init_mediapipe(self):
-        """Initialize MediaPipe Face Mesh (called in each worker process)"""
-        if self.face_mesh is None:
-            with SuppressOutput():
-                mp_face_mesh = mp.solutions.face_mesh
-                self.face_mesh = mp_face_mesh.FaceMesh(
-                    static_image_mode=False,
-                    max_num_faces=3, # 1
-                    refine_landmarks=True,
-                    min_detection_confidence=0.4, # 0.5
-                    min_tracking_confidence=0.4 # 0.5
-                )
-                # Warm up the model with a dummy image to complete initialization
-                dummy_image = np.zeros((160, 160, 3), dtype=np.uint8)
-                _ = self.face_mesh.process(dummy_image)
+        """
+        Initialize MediaPipe Face Mesh
+        This needs to be called in each worker process
+        """
+        if self.face_mesh_initialized:
+            return
+        
+        try:
+            print("🔧 Initializing MediaPipe Face Mesh...")
+            self.face_mesh = self.mp_face_mesh.FaceMesh(
+                static_image_mode=True,  # Use True for video frames
+                max_num_faces=3,  # Only detect 1 face per frame
+                refine_landmarks=True,  # Get more detailed landmarks
+                min_detection_confidence=0.4,
+                min_tracking_confidence=0.4
+            )
+            self.face_mesh_initialized = True
+            print("✅ MediaPipe Face Mesh initialized successfully")
+        except Exception as e:
+            print(f"❌ Failed to initialize MediaPipe: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            self.face_mesh = None
+            self.face_mesh_initialized = False
+    
+    def cap_release_safe(cap):
+        """Safely release VideoCapture"""
+        try:
+            if cap is not None:
+                cap.release()
+        except:
+            pass
 
     def _load_from_directory(self, data_root):
         """Load videos from directory structure"""
@@ -201,7 +222,7 @@ class VideoDeceptionDataset(Dataset):
         truthful_dir = data_root / 'truthful'
         if truthful_dir.exists():
             for video_file in truthful_dir.glob('*'):
-                if video_file.suffix.lower() in ['.mp4', '.avi', '.mov', '.mkv']:
+                if video_file.suffix.lower() in ['.mp4', '.avi', '.mov', '.mkv', '.wmv']:
                     self.video_list.append(str(video_file))
                     self.labels.append(0)
 
@@ -209,12 +230,26 @@ class VideoDeceptionDataset(Dataset):
         deceptive_dir = data_root / 'deceptive'
         if deceptive_dir.exists():
             for video_file in deceptive_dir.glob('*'):
-                if video_file.suffix.lower() in ['.mp4', '.avi', '.mov', '.mkv']:
+                if video_file.suffix.lower() in ['.mp4', '.avi', '.mov', '.mkv', '.wmv']:
                     self.video_list.append(str(video_file))
                     self.labels.append(1)
 
         print(f"Loaded {len(self.video_list)} videos from {data_root}")
         print(f"Truthful: {self.labels.count(0)}, Deceptive: {self.labels.count(1)}")
+
+    def _count_frames_manually(self, cap):
+        """
+        Manually count frames for videos with corrupted metadata
+        """
+        count = 0
+        while True:
+            ret, _ = cap.read()
+            if not ret:
+                break
+            count += 1
+            if count > 10000:  # Safety limit
+                break
+        return count
 
     def _load_from_annotation(self, annotation_file):
         """Load videos from annotation file"""
@@ -237,8 +272,21 @@ class VideoDeceptionDataset(Dataset):
 
         print(f"Loaded {len(self.video_list)} videos from {annotation_file}")
         print(f"Truthful: {self.labels.count(0)}, Deceptive: {self.labels.count(1)}")
-
-    def _extract_audio(self, video_path):
+    
+    def _get_dummy_sample(self, label, video_path):
+        """
+        Return a safe dummy sample when video processing fails completely
+        """
+        return {
+            'vision_behaviour': torch.zeros(self.num_frames, 64, dtype=torch.float32),
+            'vision_face': torch.zeros(3, self.num_frames, self.frame_size[0], self.frame_size[1], dtype=torch.float32),
+            'audio_mel': torch.zeros(3, self.n_mels, self.audio_length // 160 + 1, dtype=torch.float32),
+            'audio_wave': torch.zeros(self.audio_length, dtype=torch.float32),
+            'label': torch.tensor(label, dtype=torch.long),
+            'videoname': os.path.basename(video_path) + '_DUMMY'
+        }
+    
+    # def _extract_audio(self, video_path):
         """
         Extract audio from video and create mel spectrogram
         FIX: Use scipy resampler (no resampy dependency) and torchaudio as fallback
@@ -345,201 +393,495 @@ class VideoDeceptionDataset(Dataset):
 
         return waveform, mel_spec_3ch
 
-    def _sample_frames(self, video_path):
+    def _extract_audio(self, video_path):
         """
-        Sample frames uniformly from video with proper error handling
-        FIX: Use FFmpeg fallback for videos that OpenCV can't read (especially MKV files)
-        """
-        # First attempt: OpenCV direct reading
-        cap = cv2.VideoCapture(video_path)
-
-        if not cap.isOpened():
-            # Fallback: Use FFmpeg to pipe frames directly
-            return self._sample_frames_ffmpeg(video_path)
-
-        # Set backend to FFmpeg for better H.264 handling
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 3)
-
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        fps = cap.get(cv2.CAP_PROP_FPS)
-
-        # FIX: If frame count is unreliable (common with H.264), estimate from duration
-        if total_frames <= 0 or fps <= 0:
-            cap.release()
-            return self._sample_frames_ffmpeg(video_path)
-
-        # Normal case: known frame count
-        if total_frames < self.num_frames:
-            frame_indices = np.linspace(0, max(0, total_frames - 1), self.num_frames, dtype=int)
-        else:
-            frame_indices = np.linspace(0, total_frames - 1, self.num_frames, dtype=int)
-
-        frames = []
-        failed_reads = 0
-        max_failures = self.num_frames // 4  # Allow up to 25% read failures
-
-        for idx in frame_indices:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-            ret, frame = cap.read()
-
-            if ret and frame is not None:
-                try:
-                    # Resize frame
-                    frame = cv2.resize(frame, self.frame_size)
-                    # Convert BGR to RGB
-                    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    frames.append(frame)
-                    failed_reads = 0  # Reset failure counter on success
-                except Exception as e:
-                    failed_reads += 1
-                    if frames:
-                        frames.append(frames[-1].copy())
-                    else:
-                        frames.append(np.zeros((self.frame_size[0], self.frame_size[1], 3), dtype=np.uint8))
-            else:
-                failed_reads += 1
-                if frames:
-                    frames.append(frames[-1].copy())
-                else:
-                    frames.append(np.zeros((self.frame_size[0], self.frame_size[1], 3), dtype=np.uint8))
-
-            # If too many failures, fall back to FFmpeg
-            if failed_reads > max_failures:
-                cap.release()
-                return self._sample_frames_ffmpeg(video_path)
-
-        cap.release()
-
-        # Ensure we have exactly num_frames
-        while len(frames) < self.num_frames:
-            if frames:
-                frames.append(frames[-1].copy())
-            else:
-                frames.append(np.zeros((self.frame_size[0], self.frame_size[1], 3), dtype=np.uint8))
-
-        # Stack frames: (T, H, W, C)
-        frames = np.stack(frames[:self.num_frames], axis=0)
-        return frames
-
-    def _sample_frames_ffmpeg(self, video_path):
-        """
-        Fallback method: Use FFmpeg directly to extract frames
-        This handles MKV and other problematic formats that OpenCV can't read
+        Extract audio from video - WORKS WITH ALL FORMATS
         """
         try:
-            # First, get video duration and fps using ffprobe
+            import torchaudio
+            import subprocess
+            import tempfile
+            
+            # Try direct loading first
+            try:
+                waveform, sample_rate = torchaudio.load(video_path)
+            except:
+                # Fallback: extract audio to temp wav file using ffmpeg
+                with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_audio:
+                    temp_path = temp_audio.name
+                
+                try:
+                    # Extract audio using ffmpeg (handles all video formats)
+                    subprocess.run([
+                        'ffmpeg', '-i', video_path, '-vn', '-acodec', 'pcm_s16le',
+                        '-ar', str(self.sample_rate), '-ac', '1', '-y', temp_path
+                    ], check=True, capture_output=True)
+                    
+                    waveform, sample_rate = torchaudio.load(temp_path)
+                    os.remove(temp_path)
+                except Exception as e:
+                    print(f"⚠️ Audio extraction failed for {os.path.basename(video_path)}: {str(e)}")
+                    # Return silent audio
+                    waveform = torch.zeros(1, self.audio_length)
+                    sample_rate = self.sample_rate
+            
+            # Resample if necessary
+            if sample_rate != self.sample_rate:
+                resampler = torchaudio.transforms.Resample(sample_rate, self.sample_rate)
+                waveform = resampler(waveform)
+            
+            # Convert to mono if stereo
+            if waveform.shape[0] > 1:
+                waveform = torch.mean(waveform, dim=0, keepdim=True)
+            
+            # Pad or truncate to target length
+            if waveform.shape[1] < self.audio_length:
+                waveform = torch.nn.functional.pad(waveform, (0, self.audio_length - waveform.shape[1]))
+            else:
+                waveform = waveform[:, :self.audio_length]
+            
+            # Generate mel spectrogram
+            mel_transform = torchaudio.transforms.MelSpectrogram(
+                sample_rate=self.sample_rate,
+                n_mels=self.n_mels,
+                n_fft=400,
+                hop_length=160
+            )
+            mel_spec = mel_transform(waveform)
+            
+            # Convert to 3-channel format (for compatibility)
+            mel_spec = mel_spec.repeat(3, 1, 1)
+            
+            return waveform.squeeze(0).numpy(), mel_spec.numpy()
+        
+        except Exception as e:
+            print(f"❌ Audio extraction error for {os.path.basename(video_path)}: {str(e)}")
+            # Return silent audio
+            return (np.zeros(self.audio_length, dtype=np.float32),
+                    np.zeros((3, self.n_mels, self.audio_length // 160 + 1), dtype=np.float32))
+
+    # def _sample_frames(self, video_path):
+    #     """
+    #     Sample frames uniformly from video with proper error handling
+    #     FIX: Use FFmpeg fallback for videos that OpenCV can't read (especially MKV files)
+    #     """
+    #     # First attempt: OpenCV direct reading
+    #     cap = cv2.VideoCapture(video_path)
+
+    #     if not cap.isOpened():
+    #         # Fallback: Use FFmpeg to pipe frames directly
+    #         # return self._sample_frames_ffmpeg(video_path)
+    #         return None
+
+    #     # Set backend to FFmpeg for better H.264 handling
+    #     cap.set(cv2.CAP_PROP_BUFFERSIZE, 3)
+
+    #     try:
+    #         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    #         fps = cap.get(cv2.CAP_PROP_FPS)
+
+    #         # # FIX: If frame count is unreliable (common with H.264), estimate from duration
+    #         # if total_frames <= 0 or fps <= 0:
+    #         #     cap.release()
+    #         #     return self._sample_frames_ffmpeg(video_path)
+
+    #         # Handle videos with invalid metadata
+    #         if total_frames <= 0 or fps <= 0:
+    #             print(f"⚠️ Invalid video metadata for {os.path.basename(video_path)}, counting frames manually")
+    #             total_frames = self._count_frames_manually(cap)
+    #             cap.release()
+    #             cap = cv2.VideoCapture(video_path)  # Reopen
+            
+    #         if total_frames < self.num_frames:
+    #             print(f"⚠️ Video {os.path.basename(video_path)} has only {total_frames} frames, needed {self.num_frames}")
+    #             # Sample with repetition
+    #             indices = np.linspace(0, max(0, total_frames - 1), self.num_frames).astype(int)
+    #         else:
+    #             # Uniform sampling
+    #             indices = np.linspace(0, total_frames - 1, self.num_frames).astype(int)
+        
+    #         frames = []
+    #         last_valid_frame = None
+    #         # failed_reads = 0
+    #         # max_failures = self.num_frames // 4  # Allow up to 25% read failures
+
+    #         for idx in indices:
+    #             cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+    #             ret, frame = cap.read()
+                
+    #             if ret and frame is not None:
+    #                 # Resize to target size
+    #                 frame = cv2.resize(frame, (self.frame_size[1], self.frame_size[0]))
+    #                 # Convert BGR to RGB
+    #                 frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    #                 frames.append(frame)
+    #                 last_valid_frame = frame.copy()
+    #             else:
+    #                 # Use last valid frame or create black frame
+    #                 if last_valid_frame is not None:
+    #                     frames.append(last_valid_frame.copy())
+    #                 else:
+    #                     black_frame = np.zeros((self.frame_size[0], self.frame_size[1], 3), dtype=np.uint8)
+    #                     frames.append(black_frame)
+    #         cap.release()
+
+    #         if len(frames) != self.num_frames:
+    #             print(f"⚠️ Expected {self.num_frames} frames, got {len(frames)}")
+    #             # Pad or truncate
+    #             while len(frames) < self.num_frames:
+    #                 frames.append(frames[-1].copy() if frames else 
+    #                             np.zeros((self.frame_size[0], self.frame_size[1], 3), dtype=np.uint8))
+    #             frames = frames[:self.num_frames]
+            
+    #         return np.array(frames, dtype=np.uint8)
+        
+    #     except Exception as e:
+    #         print(f"❌ Error sampling frames from {os.path.basename(video_path)}: {str(e)}")
+    #         cap.release()
+    #         return None
+
+    def _sample_frames(self, video_path):
+        """
+        Sample frames uniformly from video with FFmpeg fallback for problematic formats
+        """
+        video_name = os.path.basename(video_path)
+        
+        # Check if file exists
+        if not os.path.exists(video_path):
+            print(f"❌ File does not exist: {video_path}")
+            return None
+        
+        file_size = os.path.getsize(video_path)
+        print(f"📹 Processing: {video_name} ({file_size/(1024*1024):.2f} MB)")
+        
+        # First attempt: OpenCV direct reading
+        cap = cv2.VideoCapture(video_path)
+        
+        if not cap.isOpened():
+            print(f"⚠️ OpenCV failed to open {video_name}, trying FFmpeg fallback...")
+            cap_release_safe(cap)
+            return self._sample_frames_ffmpeg(video_path)
+        
+        try:
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            
+            print(f"   Frames: {total_frames}, FPS: {fps:.1f}, Size: {width}x{height}")
+            
+            # Handle invalid metadata
+            if total_frames <= 0 or fps <= 0:
+                print(f"   ⚠️ Invalid metadata, trying FFmpeg fallback...")
+                cap.release()
+                return self._sample_frames_ffmpeg(video_path)
+            
+            # Test reading first frame
+            ret, test_frame = cap.read()
+            if not ret or test_frame is None:
+                print(f"   ❌ Cannot read frames, trying FFmpeg fallback...")
+                cap.release()
+                return self._sample_frames_ffmpeg(video_path)
+            
+            print(f"   ✅ First frame OK: {test_frame.shape}")
+            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)  # Reset
+            
+            # Determine sampling indices
+            if total_frames < self.num_frames:
+                print(f"   ⚠️ Only {total_frames} frames, need {self.num_frames} (will duplicate)")
+                indices = np.linspace(0, max(0, total_frames - 1), self.num_frames).astype(int)
+            else:
+                indices = np.linspace(0, total_frames - 1, self.num_frames).astype(int)
+            
+            frames = []
+            last_valid_frame = None
+            failed_reads = 0
+            
+            for idx in indices:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, int(idx))
+                ret, frame = cap.read()
+                
+                if ret and frame is not None and frame.size > 0:
+                    # Resize and convert
+                    frame = cv2.resize(frame, (self.frame_size[1], self.frame_size[0]))
+                    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    frames.append(frame)
+                    last_valid_frame = frame.copy()
+                else:
+                    failed_reads += 1
+                    # Use last valid frame or black frame
+                    if last_valid_frame is not None:
+                        frames.append(last_valid_frame.copy())
+                    else:
+                        frames.append(np.zeros((self.frame_size[0], self.frame_size[1], 3), dtype=np.uint8))
+            
+            cap.release()
+            
+            if failed_reads > 0:
+                print(f"   ⚠️ Failed to read {failed_reads}/{len(indices)} frames (used fallback)")
+            
+            # If too many failures, try FFmpeg
+            if failed_reads > len(indices) // 2:
+                print(f"   ❌ Too many failed reads ({failed_reads}/{len(indices)}), trying FFmpeg...")
+                return self._sample_frames_ffmpeg(video_path)
+            
+            # Validate frame count
+            if len(frames) != self.num_frames:
+                while len(frames) < self.num_frames:
+                    frames.append(frames[-1].copy() if frames else 
+                                np.zeros((self.frame_size[0], self.frame_size[1], 3), dtype=np.uint8))
+                frames = frames[:self.num_frames]
+            
+            result = np.array(frames, dtype=np.uint8)
+            print(f"   ✅ Loaded {self.num_frames} frames, shape: {result.shape}")
+            
+            return result
+        
+        except Exception as e:
+            print(f"   ❌ Exception: {str(e)}")
+            cap.release()
+            # Try FFmpeg as last resort
+            print(f"   Trying FFmpeg fallback...")
+            return self._sample_frames_ffmpeg(video_path)
+
+    # def _sample_frames_ffmpeg(self, video_path):
+    #     """
+    #     Fallback method: Use FFmpeg directly to extract frames
+    #     This handles MKV and other problematic formats that OpenCV can't read
+    #     """
+    #     try:
+    #         # First, get video duration and fps using ffprobe
+    #         probe_cmd = [
+    #             'ffprobe',
+    #             '-v', 'error',
+    #             '-select_streams', 'v:0',
+    #             '-show_entries', 'stream=duration,nb_frames,r_frame_rate',
+    #             '-of', 'default=noprint_wrappers=1',
+    #             video_path
+    #         ]
+
+    #         probe_result = subprocess.run(
+    #             probe_cmd,
+    #             capture_output=True,
+    #             text=True,
+    #             timeout=10
+    #         )
+
+    #         # Parse output
+    #         duration = None
+    #         nb_frames = None
+    #         fps = None
+
+    #         for line in probe_result.stdout.split('\n'):
+    #             if 'duration=' in line:
+    #                 try:
+    #                     duration = float(line.split('=')[1])
+    #                 except:
+    #                     pass
+    #             elif 'nb_frames=' in line:
+    #                 try:
+    #                     nb_frames = int(line.split('=')[1])
+    #                 except:
+    #                     pass
+    #             elif 'r_frame_rate=' in line:
+    #                 try:
+    #                     rate_parts = line.split('=')[1].split('/')
+    #                     fps = float(rate_parts[0]) / float(rate_parts[1])
+    #                 except:
+    #                     pass
+
+    #         # Estimate total frames
+    #         if nb_frames:
+    #             total_frames = nb_frames
+    #         elif duration and fps:
+    #             total_frames = int(duration * fps)
+    #         else:
+    #             total_frames = self.num_frames  # Fallback
+
+    #         # Calculate frame indices to extract
+    #         if total_frames < self.num_frames:
+    #             frame_indices = list(range(total_frames))
+    #             # Duplicate last frame if needed
+    #             while len(frame_indices) < self.num_frames:
+    #                 frame_indices.append(frame_indices[-1] if frame_indices else 0)
+    #         else:
+    #             frame_indices = np.linspace(0, total_frames - 1, self.num_frames, dtype=int).tolist()
+
+    #         frames = []
+
+    #         # Extract frames using FFmpeg
+    #         for idx in frame_indices:
+    #             # Seek to specific frame and extract one frame
+    #             cmd = [
+    #                 'ffmpeg',
+    #                 '-ss', str(idx / max(fps, 1)),  # Seek to time position
+    #                 '-i', video_path,
+    #                 '-vframes', '1',  # Extract 1 frame
+    #                 '-f', 'rawvideo',
+    #                 '-pix_fmt', 'rgb24',
+    #                 '-s', f'{self.frame_size[0]}x{self.frame_size[1]}',
+    #                 '-v', 'quiet',
+    #                 '-'
+    #             ]
+
+    #             result = subprocess.run(
+    #                 cmd,
+    #                 capture_output=True,
+    #                 timeout=5
+    #             )
+
+    #             if result.returncode == 0 and len(result.stdout) > 0:
+    #                 # Parse raw RGB data
+    #                 expected_size = self.frame_size[0] * self.frame_size[1] * 3
+    #                 if len(result.stdout) >= expected_size:
+    #                     frame_data = np.frombuffer(result.stdout[:expected_size], dtype=np.uint8)
+    #                     frame = frame_data.reshape((self.frame_size[1], self.frame_size[0], 3))
+    #                     frames.append(frame)
+    #                 else:
+    #                     if frames:
+    #                         frames.append(frames[-1].copy())
+    #                     else:
+    #                         frames.append(np.zeros((self.frame_size[1], self.frame_size[0], 3), dtype=np.uint8))
+    #             else:
+    #                 if frames:
+    #                     frames.append(frames[-1].copy())
+    #                 else:
+    #                     frames.append(np.zeros((self.frame_size[1], self.frame_size[0], 3), dtype=np.uint8))
+
+    #         # Ensure correct number of frames
+    #         while len(frames) < self.num_frames:
+    #             if frames:
+    #                 frames.append(frames[-1].copy())
+    #             else:
+    #                 frames.append(np.zeros((self.frame_size[1], self.frame_size[0], 3), dtype=np.uint8))
+
+    #         frames = np.stack(frames[:self.num_frames], axis=0)
+    #         return frames
+
+    #     except Exception as e:
+    #         if self.mode == 'train' and random.random() < 0.1:
+    #             print(f"FFmpeg fallback also failed for {os.path.basename(video_path)}: {str(e)[:50]}")
+    #         # Return black frames as last resort
+    #         return np.zeros((self.num_frames, self.frame_size[1], self.frame_size[0], 3), dtype=np.uint8)
+    def _sample_frames_ffmpeg(self, video_path):
+        """
+        Sample frames using FFmpeg (works with ALL video formats: mp4, mkv, wmv, avi, etc.)
+        This is more robust than OpenCV for problematic codecs
+        """
+        video_name = os.path.basename(video_path)
+        print(f"   🔧 Using FFmpeg for: {video_name}")
+        
+        try:
+            # Get video duration and frame count using ffprobe
             probe_cmd = [
-                'ffprobe',
-                '-v', 'error',
+                'ffprobe', '-v', 'error',
                 '-select_streams', 'v:0',
-                '-show_entries', 'stream=duration,nb_frames,r_frame_rate',
-                '-of', 'default=noprint_wrappers=1',
+                '-count_packets',
+                '-show_entries', 'stream=nb_read_packets,duration,r_frame_rate',
+                '-of', 'csv=p=0',
                 video_path
             ]
-
-            probe_result = subprocess.run(
-                probe_cmd,
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
-
-            # Parse output
-            duration = None
-            nb_frames = None
-            fps = None
-
-            for line in probe_result.stdout.split('\n'):
-                if 'duration=' in line:
-                    try:
-                        duration = float(line.split('=')[1])
-                    except:
-                        pass
-                elif 'nb_frames=' in line:
-                    try:
-                        nb_frames = int(line.split('=')[1])
-                    except:
-                        pass
-                elif 'r_frame_rate=' in line:
-                    try:
-                        rate_parts = line.split('=')[1].split('/')
-                        fps = float(rate_parts[0]) / float(rate_parts[1])
-                    except:
-                        pass
-
-            # Estimate total frames
-            if nb_frames:
-                total_frames = nb_frames
-            elif duration and fps:
-                total_frames = int(duration * fps)
-            else:
-                total_frames = self.num_frames  # Fallback
-
-            # Calculate frame indices to extract
-            if total_frames < self.num_frames:
-                frame_indices = list(range(total_frames))
-                # Duplicate last frame if needed
-                while len(frame_indices) < self.num_frames:
-                    frame_indices.append(frame_indices[-1] if frame_indices else 0)
-            else:
-                frame_indices = np.linspace(0, total_frames - 1, self.num_frames, dtype=int).tolist()
-
-            frames = []
-
-            # Extract frames using FFmpeg
-            for idx in frame_indices:
-                # Seek to specific frame and extract one frame
-                cmd = [
-                    'ffmpeg',
-                    '-ss', str(idx / max(fps, 1)),  # Seek to time position
-                    '-i', video_path,
-                    '-vframes', '1',  # Extract 1 frame
-                    '-f', 'rawvideo',
-                    '-pix_fmt', 'rgb24',
-                    '-s', f'{self.frame_size[0]}x{self.frame_size[1]}',
-                    '-v', 'quiet',
-                    '-'
-                ]
-
-                result = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    timeout=5
-                )
-
-                if result.returncode == 0 and len(result.stdout) > 0:
-                    # Parse raw RGB data
-                    expected_size = self.frame_size[0] * self.frame_size[1] * 3
-                    if len(result.stdout) >= expected_size:
-                        frame_data = np.frombuffer(result.stdout[:expected_size], dtype=np.uint8)
-                        frame = frame_data.reshape((self.frame_size[1], self.frame_size[0], 3))
-                        frames.append(frame)
+            
+            try:
+                result = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=10)
+                if result.returncode == 0:
+                    parts = result.stdout.strip().split(',')
+                    if len(parts) >= 2:
+                        duration = float(parts[0]) if parts[0] else 0
+                        fps_str = parts[1] if len(parts) > 1 else "30/1"
+                        
+                        # Parse FPS (format: "30/1" or "29.97")
+                        if '/' in fps_str:
+                            num, den = map(float, fps_str.split('/'))
+                            fps = num / den if den > 0 else 30.0
+                        else:
+                            fps = float(fps_str) if fps_str else 30.0
+                        
+                        total_frames = int(duration * fps) if duration > 0 else self.num_frames * 2
+                        print(f"      Video info: {duration:.1f}s, {fps:.1f} FPS, ~{total_frames} frames")
                     else:
+                        total_frames = self.num_frames * 2
+                else:
+                    total_frames = self.num_frames * 2
+            except:
+                total_frames = self.num_frames * 2
+            
+            # Calculate timestamps to extract
+            if total_frames < self.num_frames:
+                timestamps = np.linspace(0, max(0.1, duration - 0.1), self.num_frames)
+            else:
+                timestamps = np.linspace(0, duration - 0.1, self.num_frames) if duration > 0 else np.arange(self.num_frames) * 0.1
+            
+            frames = []
+            temp_dir = tempfile.mkdtemp()
+            
+            try:
+                # Extract frames at specific timestamps
+                for i, ts in enumerate(timestamps):
+                    output_file = os.path.join(temp_dir, f'frame_{i:04d}.jpg')
+                    
+                    extract_cmd = [
+                        'ffmpeg', '-ss', str(ts), '-i', video_path,
+                        '-vframes', '1', '-vf', f'scale={self.frame_size[1]}:{self.frame_size[0]}',
+                        '-y', output_file
+                    ]
+                    
+                    try:
+                        subprocess.run(extract_cmd, capture_output=True, timeout=5, check=False)
+                        
+                        if os.path.exists(output_file) and os.path.getsize(output_file) > 0:
+                            frame = cv2.imread(output_file)
+                            if frame is not None:
+                                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                                frames.append(frame)
+                            else:
+                                # Use last valid or black frame
+                                if frames:
+                                    frames.append(frames[-1].copy())
+                                else:
+                                    frames.append(np.zeros((self.frame_size[0], self.frame_size[1], 3), dtype=np.uint8))
+                        else:
+                            # Fallback
+                            if frames:
+                                frames.append(frames[-1].copy())
+                            else:
+                                frames.append(np.zeros((self.frame_size[0], self.frame_size[1], 3), dtype=np.uint8))
+                    
+                    except subprocess.TimeoutExpired:
+                        print(f"      ⚠️ Timeout extracting frame {i}")
                         if frames:
                             frames.append(frames[-1].copy())
                         else:
-                            frames.append(np.zeros((self.frame_size[1], self.frame_size[0], 3), dtype=np.uint8))
-                else:
-                    if frames:
-                        frames.append(frames[-1].copy())
-                    else:
-                        frames.append(np.zeros((self.frame_size[1], self.frame_size[0], 3), dtype=np.uint8))
-
+                            frames.append(np.zeros((self.frame_size[0], self.frame_size[1], 3), dtype=np.uint8))
+            
+            finally:
+                # Cleanup temp files
+                import shutil
+                try:
+                    shutil.rmtree(temp_dir)
+                except:
+                    pass
+            
             # Ensure correct number of frames
+            if len(frames) == 0:
+                print(f"      ❌ FFmpeg failed to extract any frames")
+                return None
+            
             while len(frames) < self.num_frames:
-                if frames:
-                    frames.append(frames[-1].copy())
-                else:
-                    frames.append(np.zeros((self.frame_size[1], self.frame_size[0], 3), dtype=np.uint8))
-
-            frames = np.stack(frames[:self.num_frames], axis=0)
-            return frames
-
+                frames.append(frames[-1].copy())
+            
+            frames = frames[:self.num_frames]
+            
+            result = np.array(frames, dtype=np.uint8)
+            print(f"      ✅ FFmpeg extracted {len(frames)} frames, shape: {result.shape}")
+            
+            return result
+        
         except Exception as e:
-            if self.mode == 'train' and random.random() < 0.1:
-                print(f"FFmpeg fallback also failed for {os.path.basename(video_path)}: {str(e)[:50]}")
-            # Return black frames as last resort
-            return np.zeros((self.num_frames, self.frame_size[1], self.frame_size[0], 3), dtype=np.uint8)
+            print(f"      ❌ FFmpeg fallback failed: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return None
 
     def _extract_behavioral_features(self, frames):
         """
@@ -785,52 +1127,76 @@ class VideoDeceptionDataset(Dataset):
         video_path = self.video_list[idx]
         label = self.labels[idx]
 
-        # Extract face frames
+        # Enable verbose debugging for first 2 videos
+        if idx < 2:
+            print(f"\n\n{'#'*70}")
+            print(f"# PROCESSING SAMPLE {idx}")
+            print(f"# Video: {os.path.basename(video_path)}")
+            print(f"{'#'*70}\n")
+        
+        # Extract frames with debugging
         frames = self._sample_frames(video_path)
+        
         if frames is None:
+            print(f"❌ Frames is None, creating dummy frames")
             frames = np.zeros((self.num_frames, self.frame_size[0], self.frame_size[1], 3), dtype=np.uint8)
-
-        # Extract audio
-        audio_wave, audio_mel = self._extract_audio(video_path)
-
-        # Extract behavioral features (OpenFace + Affect)
+        
+        # Extract behavioral features with debugging
         behavioral_features = self._extract_behavioral_features(frames)
 
-         # 🔍 ADD THESE DEBUG PRINTS
-        print(f"🔍 Behavioral features BEFORE tensor: shape={behavioral_features.shape}, dtype={behavioral_features.dtype}")
-        
-        # Convert face frames to tensor: (T, H, W, C) -> (C, T, H, W) for the model
-        frames = torch.from_numpy(frames).permute(3, 0, 1, 2).float()
-        # Normalize to [-1, 1]
-        frames = (frames / 255.0 - 0.5) * 2.0
+        try:
+            # Extract face frames
+            frames = self._sample_frames(video_path)
+            if frames is None or frames.size == 0:
+                frames = np.zeros((self.num_frames, self.frame_size[0], self.frame_size[1], 3), dtype=np.uint8)
 
-        # 🔍 DEBUG: Print shapes
-        if idx == 0:  # Print for first sample
-            print(f"\n🔍 DEBUG Info for video: {os.path.basename(video_path)}")
-            print(f"  Frames shape: {frames.shape}")
-            print(f"  Behavioral features shape: {behavioral_features.shape}")
-            print(f"  Behavioral features sample: {behavioral_features[0][:10]}")  # First 10 features
-            print(f"  Non-zero features: {np.count_nonzero(behavioral_features)}/{behavioral_features.size}")
-        
-        # Convert behavioral features to tensor
-        behavioral_features = torch.from_numpy(behavioral_features).float()
+            # Extract audio
+            audio_wave, audio_mel = self._extract_audio(video_path)
 
-        # 🔍 DEBUG: Print tensor shapes
-        if idx == 0:
-            print(f"  Behavioral tensor shape: {behavioral_features.shape}")
-            print(f"  Expected shape: ({self.num_frames}, 64)\n")
-        
-        sample = {
-            'vision_behaviour': behavioral_features,  # (T=64, 64)
-            'vision_face': frames,  # (C=3, T=64, H=160, W=160)
-            'audio_mel': audio_mel,  # (C=3, n_mels=128, time)
-            'audio_wave': audio_wave,  # (audio_length,)
-            'label': torch.tensor(label, dtype=torch.long),
-            'videoname': os.path.basename(video_path)
-        }
+            # Extract behavioral features (OpenFace + Affect)
+            behavioral_features = self._extract_behavioral_features(frames)
 
-        return sample
+            # 🔍 Validate behavioral features shape
+            if behavioral_features.shape != (self.num_frames, 64):
+                print(f"⚠️ Invalid behavioral features shape {behavioral_features.shape} for {os.path.basename(video_path)}")
+                behavioral_features = np.zeros((self.num_frames, 64), dtype=np.float32)
+            
+            # Convert face frames to tensor: (T, H, W, C) -> (C, T, H, W) for the model
+            frames = torch.from_numpy(frames).permute(3, 0, 1, 2).float()
+            # Normalize to [-1, 1]
+            frames = (frames / 255.0 - 0.5) * 2.0
 
+            # 🔍 DEBUG: Print shapes
+            if idx == 0:  # Print for first sample
+                print(f"\n🔍 Info for video: {os.path.basename(video_path)}")
+                print(f"  Frames shape: {frames.shape}")
+                print(f"  Behavioral features shape: {behavioral_features.shape}")
+                print(f"  Behavioral features sample: {behavioral_features[0][:10]}")  # First 10 features
+                print(f"  Non-zero features: {np.count_nonzero(behavioral_features)}/{behavioral_features.size}")
+            
+            # Convert behavioral features to tensor
+            behavioral_features = torch.from_numpy(behavioral_features).float()
+
+            # # 🔍 DEBUG: Print tensor shapes
+            # if idx == 0:
+            #     print(f"  Behavioral tensor shape: {behavioral_features.shape}")
+            #     print(f"  Expected shape: ({self.num_frames}, 64)\n")
+            
+            sample = {
+                'vision_behaviour': behavioral_features,  # (T=64, 64)
+                'vision_face': frames,  # (C=3, T=64, H=160, W=160)
+                'audio_mel': audio_mel,  # (C=3, n_mels=128, time)
+                'audio_wave': audio_wave,  # (audio_length,)
+                'label': torch.tensor(label, dtype=torch.long),
+                'videoname': os.path.basename(video_path)
+            }
+
+            return sample
+
+        except Exception as e:
+            print(f"❌ Error processing {os.path.basename(video_path)}: {str(e)}")
+            # Return a safe dummy sample
+            return self._get_dummy_sample(label, video_path)
 
 def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch, args):
     """Train for one epoch"""
@@ -903,7 +1269,6 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch, args
     epoch_acc = 100 * correct / total
     return loss_global.avg, epoch_acc
 
-
 def validate(model, dataloader, criterion, device):
     """Validate the model"""
     model.eval()
@@ -942,8 +1307,6 @@ def validate(model, dataloader, criterion, device):
 
     return loss_meter.avg, accuracy, all_preds, all_labels, all_scores
 
-
-
 def save_checkpoint(model, optimizer, epoch, current_step, best_val_acc, scheduler_warmup, scheduler_cosine, warmup_steps):
     """Save checkpoint for spot instance recovery."""
     checkpoint = {
@@ -973,8 +1336,14 @@ def load_checkpoint(model, optimizer, scheduler_warmup, scheduler_cosine, device
         return ckpt['epoch'] + 1, ckpt['current_step'], ckpt['best_val_acc']
     return 0, 0, 0.0
 
-
+# def install_ffmpeg():
+#     print("Installing ffmpeg...")
+#     subprocess.run(["sudo apt-get", "update"], check=True)
+#     subprocess.run(["sudo apt-get", "install", "-y", "ffmpeg"], check=True)  # ❌ Remove
+    
 def main(args):
+
+    # install_ffmpeg()
 
     # === PASTE AT START OF main(args) ===
     print(f"DEBUG: Checking path {args.train_root}")
@@ -1274,10 +1643,10 @@ if __name__ == "__main__":
         print(str(e), flush=True)
         print(traceback.format_exc(), flush=True)
         
-        # Optional: Write to failure file (SageMaker reads this)
-        with open('/opt/ml/output/failure', 'w') as f:
-            f.write(str(e))
-            f.write(traceback.format_exc())
+        # # Optional: Write to failure file (SageMaker reads this)
+        # with open('/opt/ml/output/failure', 'w') as f:
+        #     f.write(str(e))
+        #     f.write(traceback.format_exc())
         
         # Re-raise so the job is marked as Failed
         raise
