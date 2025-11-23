@@ -17,14 +17,10 @@ import subprocess
 import tempfile
 import warnings
 import logging
-import traceback  
 
 
-
-
-# SageMaker paths (with fallbacks for local testing)
-CHECKPOINT_DIR = os.environ.get('SM_CHECKPOINT_DIR', '/opt/ml/checkpoints')
-MODEL_DIR = os.environ.get('SM_MODEL_DIR', '/opt/ml/model')
+SM_MODEL_DIR = os.environ.get('SM_MODEL_DIR', './model')
+SM_OUTPUT_DATA_DIR = os.environ.get('SM_OUTPUT_DATA_DIR', './output')
 
 # ==================== COMPREHENSIVE WARNING SUPPRESSION ====================
 
@@ -84,35 +80,6 @@ from models_comp.fusion_model import FusionModule
 from utils import AvgrageMeter, performances
 import DALoss
 import DANetwork
-
-
-# orig_stdout = sys.stdout
-# orig_stderr = sys.stderr
-
-# class Logger(object):
-#     def __init__(self, filename, stream):
-#         self.terminal = stream
-#         self.log = open(filename, "a")
-
-#     def write(self, message):
-#         self.terminal.write(message)
-#         self.log.write(message)
-#         self.log.flush()
-
-#     def flush(self):
-#         self.terminal.flush()
-#         self.log.flush()
-
-# # 1. Define the checkpoint path
-# chk_dir = os.environ.get('SM_CHECKPOINT_DIR', '/opt/ml/checkpoints')
-# os.makedirs(chk_dir, exist_ok=True)
-
-# # 2. Redirect
-# log_path = os.path.join(chk_dir, 'full_execution_log.txt')
-# sys.stdout = Logger(log_path, orig_stdout)
-# sys.stderr = Logger(log_path, orig_stderr)
-
-# print(f"✅ Logging started to {log_path}")
 
 
 def setup_seed(seed):
@@ -592,16 +559,6 @@ class VideoDeceptionDataset(Dataset):
                 features = np.zeros(64, dtype=np.float32)
                 # features = np.random.randn(64).astype(np.float32) * 0.1
 
-                    # 🔍 VALIDATE: Ensure exactly 64 features
-            if features.shape != (64,):
-                print(f"⚠️ WARNING: Feature shape is {features.shape}, padding/truncating to (64,)")
-                if features.shape[0] < 64:
-                    # Pad with zeros
-                    features = np.pad(features, (0, 64 - features.shape[0]), mode='constant')
-                else:
-                    # Truncate
-                    features = features[:64]
-            
             all_features.append(features)
         
         ###### DEBUG: Report detection rate
@@ -739,16 +696,10 @@ class VideoDeceptionDataset(Dataset):
         # Ensure exactly 64 features
         features = np.array(features[:64], dtype=np.float32)
 
-        # 🔍 ENSURE EXACTLY 64
-        if len(features) < 64:
-            # Pad with zeros
-            features = np.pad(features, (0, 64 - len(features)), mode='constant')
-        elif len(features) > 64:
-            # Truncate
-            features = features[:64]
-        
-        assert features.shape == (64,), f"❌ Features shape {features.shape}, expected (64,)"
-        
+        # # 🔍 VALIDATION
+        # assert features.shape == (64,), f"Expected 64 features, got {features.shape}"
+        # assert not np.any(np.isnan(features)), "NaN values in features!"
+        # assert not np.any(np.isinf(features)), "Inf values in features!"
 
         return features
 
@@ -796,9 +747,6 @@ class VideoDeceptionDataset(Dataset):
         # Extract behavioral features (OpenFace + Affect)
         behavioral_features = self._extract_behavioral_features(frames)
 
-         # 🔍 ADD THESE DEBUG PRINTS
-        print(f"🔍 Behavioral features BEFORE tensor: shape={behavioral_features.shape}, dtype={behavioral_features.dtype}")
-        
         # Convert face frames to tensor: (T, H, W, C) -> (C, T, H, W) for the model
         frames = torch.from_numpy(frames).permute(3, 0, 1, 2).float()
         # Normalize to [-1, 1]
@@ -943,64 +891,16 @@ def validate(model, dataloader, criterion, device):
     return loss_meter.avg, accuracy, all_preds, all_labels, all_scores
 
 
-
-def save_checkpoint(model, optimizer, epoch, current_step, best_val_acc, scheduler_warmup, scheduler_cosine, warmup_steps):
-    """Save checkpoint for spot instance recovery."""
-    checkpoint = {
-        'epoch': epoch,
-        'current_step': current_step,
-        'model_state_dict': model.state_dict(),
-        'optimizer_state_dict': optimizer.state_dict(),
-        'scheduler_warmup_state': scheduler_warmup.state_dict(),
-        'scheduler_cosine_state': scheduler_cosine.state_dict(),
-        'warmup_steps': warmup_steps,
-        'best_val_acc': best_val_acc,
-    }
-    os.makedirs(CHECKPOINT_DIR, exist_ok=True)
-    torch.save(checkpoint, os.path.join(CHECKPOINT_DIR, 'latest.pt'))
-    print(f"✅ Checkpoint saved: epoch {epoch + 1}")
-
-def load_checkpoint(model, optimizer, scheduler_warmup, scheduler_cosine, device):
-    """Load checkpoint if exists (after spot interruption)."""
-    path = os.path.join(CHECKPOINT_DIR, 'latest.pt')
-    if os.path.exists(path):
-        ckpt = torch.load(path, map_location=device)
-        model.load_state_dict(ckpt['model_state_dict'])
-        optimizer.load_state_dict(ckpt['optimizer_state_dict'])
-        scheduler_warmup.load_state_dict(ckpt['scheduler_warmup_state'])
-        scheduler_cosine.load_state_dict(ckpt['scheduler_cosine_state'])
-        print(f"🔄 Resumed from epoch {ckpt['epoch'] + 1}")
-        return ckpt['epoch'] + 1, ckpt['current_step'], ckpt['best_val_acc']
-    return 0, 0, 0.0
-
-
 def main(args):
-
-    # === PASTE AT START OF main(args) ===
-    print(f"DEBUG: Checking path {args.train_root}")
-    if os.path.exists(args.train_root):
-        contents = os.listdir(args.train_root)
-        print(f"DEBUG: Folder contents: {contents}")
-        
-        # Check for class folders
-        for cls in ['truthful', 'deceptive']:
-            cls_path = os.path.join(args.train_root, cls)
-            if os.path.exists(cls_path):
-                files = os.listdir(cls_path)
-                print(f"DEBUG: Found '{cls}' with {len(files)} files.")
-            else:
-                print(f"DEBUG: ❌ CRITICAL: Folder '{cls}' MISSING in {args.train_root}")
-    else:
-        print(f"DEBUG: ❌ CRITICAL: Path {args.train_root} does not exist.")
-    # ====================================
-
     # Setup
     setup_seed(42)
     device = torch.device(f'cuda:{args.gpu}' if torch.cuda.is_available() else 'cpu')
 
     # Create log directory
     os.makedirs(args.log, exist_ok=True)
-    log_file = open(os.path.join(args.log, 'training_log.txt'), 'a')  # Changed to 'a' for resume
+    os.makedirs(SM_MODEL_DIR, exist_ok=True)  # ← Add this
+
+    log_file = open(os.path.join(args.log, 'training_log.txt'), 'w')
 
     print(f"Using device: {device}")
     print(f"Arguments: {args}")
@@ -1054,7 +954,7 @@ def main(args):
         train_dataset,
         batch_size=args.batchsize,
         shuffle=True,
-        num_workers=args.num_workers,
+        num_workers=0,  # Set to 0 if MediaPipe issues persist
         pin_memory=True,
         drop_last=True
     )
@@ -1063,7 +963,7 @@ def main(args):
         val_dataset,
         batch_size=args.batchsize,
         shuffle=False,
-        num_workers=args.num_workers,
+        num_workers=0,  # Set to 0 if MediaPipe issues persist
         pin_memory=True
     )
 
@@ -1098,13 +998,11 @@ def main(args):
         optimizer, T_max=total_steps - warmup_steps, eta_min=1e-6
     )
 
-    # ⬇️ LOAD CHECKPOINT IF RESUMING
-    start_epoch, current_step, best_val_acc = load_checkpoint(
-        model, optimizer, scheduler_warmup, scheduler_cosine, device
-    )
-
     # Training loop
-    for epoch in range(start_epoch, args.max_epochs):
+    best_val_acc = 0.0
+    current_step = 0
+
+    for epoch in range(args.max_epochs):
         print(f"\n{'=' * 50}")
         print(f"Epoch {epoch + 1}/{args.max_epochs}")
         print(f"{'=' * 50}")
@@ -1137,147 +1035,112 @@ def main(args):
             # Save best model
             if val_acc > best_val_acc:
                 best_val_acc = val_acc
-                
-                # Save to checkpoint dir (synced to S3)
-                os.makedirs(CHECKPOINT_DIR, exist_ok=True)
                 torch.save({
                     'epoch': epoch + 1,
                     'model_state_dict': model.state_dict(),
                     'optimizer_state_dict': optimizer.state_dict(),
                     'best_acc': best_val_acc,
-                }, os.path.join(CHECKPOINT_DIR, 'best_model.pt'))
-                
-                # Also save to log dir
-                torch.save({
-                    'epoch': epoch + 1,
-                    'model_state_dict': model.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'best_acc': best_val_acc,
+                    # 'args': args,
                 }, os.path.join(args.log, 'best_model.pt'))
-                print(f"🏆 Saved best model with accuracy: {best_val_acc:.2f}%")
+                
+                # 2. Save to SM_MODEL_DIR (SageMaker uploads this!)
+                torch.save({
+                    'epoch': epoch + 1,
+                    'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'best_acc': best_val_acc,
+                }, os.path.join(SM_MODEL_DIR, 'best_model.pt'))
+                
+                print(f"✓ Saved best model to {SM_MODEL_DIR} with accuracy: {best_val_acc:.2f}%")
+                print(f"✓ Saved best model with accuracy: {best_val_acc:.2f}%")
                 log_file.write(f"Saved best model with accuracy: {best_val_acc:.2f}%\n")
 
-        # ⬇️ SAVE CHECKPOINT AFTER EACH EPOCH
-        save_checkpoint(
-            model, optimizer, epoch, current_step, best_val_acc,
-            scheduler_warmup, scheduler_cosine, warmup_steps
-        )
-
         log_file.flush()
-
-    # ⬇️ SAVE FINAL MODEL TO SAGEMAKER OUTPUT PATH
-    os.makedirs(MODEL_DIR, exist_ok=True)
-    torch.save(model.state_dict(), os.path.join(MODEL_DIR, 'model.pt'))
+    
+    # IMPORTANT: Save final model at the end too
+    print(f"\nSaving final model to {SM_MODEL_DIR}...")
     torch.save({
+        'epoch': args.max_epochs,
         'model_state_dict': model.state_dict(),
-        'args': vars(args),
+        'optimizer_state_dict': optimizer.state_dict(),
         'best_acc': best_val_acc,
-    }, os.path.join(MODEL_DIR, 'model_full.pt'))
+    }, os.path.join(SM_MODEL_DIR, 'model.pt'))
 
-    print(f"\n✅ Training completed! Best validation accuracy: {best_val_acc:.2f}%")
-    print(f"📦 Model saved to {MODEL_DIR}")
+    print(f"\nTraining completed! Best validation accuracy: {best_val_acc:.2f}%")
     log_file.write(f"\nBest validation accuracy: {best_val_acc:.2f}%\n")
     log_file.close()
 
+
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Multimodal Deception Detection")
 
-    try:
-        # Force print immediately to prove code started
-        print("🚀 SCRIPT STARTED SUCCESSFULLY", flush=True)
-            
-        parser = argparse.ArgumentParser(description="Multimodal Deception Detection")
+    # Training parameters
+    parser.add_argument('--gpu', type=int, default=0, help='GPU id')
+    parser.add_argument('--lr', type=float, default=5e-4, help='Learning rate')
+    parser.add_argument('--batchsize', type=int, default=8, help='Batch size')
+    parser.add_argument('--max_epochs', type=int, default=30, help='Maximum epochs')
+    parser.add_argument('--log', type=str, default='logs', help='Log directory')
+    parser.add_argument('--echo_batches', type=int, default=10, help='Print frequency')
+    parser.add_argument('--val_interval', type=int, default=1, help='Validation interval')
+    parser.add_argument('--num_workers', type=int, default=0, help='Dataloader workers')
 
-        # Training parameters
-        parser.add_argument('--gpu', type=int, default=0, help='GPU id')
-        parser.add_argument('--lr', type=float, default=5e-4, help='Learning rate')
-        parser.add_argument('--batchsize', type=int, default=8, help='Batch size')
-        parser.add_argument('--max_epochs', type=int, default=30, help='Maximum epochs')
-        parser.add_argument('--log', type=str, default='logs', help='Log directory')
-        parser.add_argument('--echo_batches', type=int, default=10, help='Print frequency')
-        parser.add_argument('--val_interval', type=int, default=1, help='Validation interval')
-        parser.add_argument('--num_workers', type=int, default=0, help='Dataloader workers')
+    # Dataset parameters
+    parser.add_argument('--train_root', type=str, default=None,
+                        help='Training data root directory')
+    parser.add_argument('--val_root', type=str, default=None,
+                        help='Validation data root directory')
+    parser.add_argument('--train_list', type=str, default=None,
+                        help='Training annotation file')
+    parser.add_argument('--val_list', type=str, default=None,
+                        help='Validation annotation file')
 
-        # Dataset parameters
-        parser.add_argument('--train_root', type=str, default=None,
-                            help='Training data root directory')
-        parser.add_argument('--val_root', type=str, default=None,
-                            help='Validation data root directory')
-        parser.add_argument('--train_list', type=str, default=None,
-                            help='Training annotation file')
-        parser.add_argument('--val_list', type=str, default=None,
-                            help='Validation annotation file')
+    # Video/Audio parameters
+    parser.add_argument('--num_frames', type=int, default=64,
+                        help='Number of frames (T=64 for behavioral features)')
+    parser.add_argument('--frame_height', type=int, default=160,
+                        help='Frame height')
+    parser.add_argument('--frame_width', type=int, default=160,
+                        help='Frame width')
+    parser.add_argument('--audio_length', type=int, default=16000,
+                        help='Audio sample length')
+    parser.add_argument('--sample_rate', type=int, default=16000,
+                        help='Audio sample rate')
+    parser.add_argument('--n_mels', type=int, default=128,
+                        help='Number of mel frequency bins')
 
-        # Video/Audio parameters
-        parser.add_argument('--num_frames', type=int, default=64,
-                            help='Number of frames (T=64 for behavioral features)')
-        parser.add_argument('--frame_height', type=int, default=160,
-                            help='Frame height')
-        parser.add_argument('--frame_width', type=int, default=160,
-                            help='Frame width')
-        parser.add_argument('--audio_length', type=int, default=16000,
-                            help='Audio sample length')
-        parser.add_argument('--sample_rate', type=int, default=16000,
-                            help='Audio sample rate')
-        parser.add_argument('--n_mels', type=int, default=128,
-                            help='Number of mel frequency bins')
+    # Model parameters (from your original code)
+    parser.add_argument('--modalities', type=str, default='vaf',
+                        help='Modalities: v=visual, a=audio, f=face')
+    parser.add_argument('--v_dim', type=int, default=64)
+    parser.add_argument('--a_dim', type=int, default=512)
+    parser.add_argument('--f_dim', type=int, default=512)
+    parser.add_argument('--common_dim', type=int, default=128)
+    parser.add_argument('--fusion_type', type=str, default='mult',
+                        help='Fusion type: concat/transformer/senet/mult')
 
-        # Model parameters (from your original code)
-        parser.add_argument('--modalities', type=str, default='vaf',
-                            help='Modalities: v=visual, a=audio, f=face')
-        parser.add_argument('--v_dim', type=int, default=64)
-        parser.add_argument('--a_dim', type=int, default=512)
-        parser.add_argument('--f_dim', type=int, default=512)
-        parser.add_argument('--common_dim', type=int, default=128)
-        parser.add_argument('--fusion_type', type=str, default='mult',
-                            help='Fusion type: concat/transformer/senet/mult')
+    # Parameters for mult fusion
+    parser.add_argument('--mult_layer', type=int, default=3)
+    parser.add_argument('--attn_dropout', type=float, default=0.1)
+    parser.add_argument('--relu_dropout', type=float, default=0.1)
+    parser.add_argument('--res_dropout', type=float, default=0.1)
+    parser.add_argument('--embed_dropout', type=float, default=0.0)
+    parser.add_argument('--attn_mask', action='store_false')
 
-        # Parameters for mult fusion
-        parser.add_argument('--mult_layer', type=int, default=3)
-        parser.add_argument('--attn_dropout', type=float, default=0.1)
-        parser.add_argument('--relu_dropout', type=float, default=0.1)
-        parser.add_argument('--res_dropout', type=float, default=0.1)
-        parser.add_argument('--embed_dropout', type=float, default=0.0)
-        parser.add_argument('--attn_mask', action='store_false')
+    # Parameters for transformer fusion
+    parser.add_argument('--embed_dim', type=int, default=64)
+    parser.add_argument('--num_heads', type=int, default=8)
+    parser.add_argument('--layers', type=int, default=4)
 
-        # Parameters for transformer fusion
-        parser.add_argument('--embed_dim', type=int, default=64)
-        parser.add_argument('--num_heads', type=int, default=8)
-        parser.add_argument('--layers', type=int, default=4)
+    # Parameters for senet fusion
+    parser.add_argument('--channel', type=int, default=64)
+    parser.add_argument('--reduction', type=int, default=16)
 
-        # Parameters for senet fusion
-        parser.add_argument('--channel', type=int, default=64)
-        parser.add_argument('--reduction', type=int, default=16)
+    args = parser.parse_args()
 
-        args = parser.parse_args()
+    # Validate arguments
+    if args.train_root is None and args.train_list is None:
+        parser.error("Either --train_root or --train_list must be provided")
+    if args.val_root is None and args.val_list is None:
+        parser.error("Either --val_root or --val_list must be provided")
 
-    # 🔍 DEBUG: Check if source_dir uploaded correctly
-        print(f"📂 Current Directory contents: {os.listdir('.')}", flush=True)
-        if os.path.exists('models_comp'):
-            print(f"📂 models_comp contents: {os.listdir('models_comp')}", flush=True)
-        else:
-            print("❌ ERROR: 'models_comp' folder NOT FOUND in container!", flush=True)
-
-        main(args)
-        
-        print("✅ SCRIPT FINISHED SUCCESSFULLY", flush=True)
-        
-        
-        # # Validate arguments
-        # if args.train_root is None and args.train_list is None:
-        #     parser.error("Either --train_root or --train_list must be provided")
-        # if args.val_root is None and args.val_list is None:
-        #     parser.error("Either --val_root or --val_list must be provided")
-
-    except Exception as e:
-        # This block catches ANY crash and prints it to your local terminal
-        print("\n\n❌ ❌ CRITICAL FAILURE ❌ ❌", flush=True)
-        print(str(e), flush=True)
-        print(traceback.format_exc(), flush=True)
-        
-        # Optional: Write to failure file (SageMaker reads this)
-        with open('/opt/ml/output/failure', 'w') as f:
-            f.write(str(e))
-            f.write(traceback.format_exc())
-        
-        # Re-raise so the job is marked as Failed
-        raise
+    main(args)

@@ -116,6 +116,9 @@ class AU_GAZE_Affect7_LSTM_MLP(nn.Module):
         )
 
     def forward(self, x):
+
+        # print(f"x shape: {x.shape}")  # should be [B, T, 50]
+
         B, C, T = x.shape  # e.g., [B, 50, 64]
         x = x.permute(0, 2, 1)  # -> [B, T, C=50]
 
@@ -128,6 +131,56 @@ class AU_GAZE_Affect7_LSTM_MLP(nn.Module):
         x_gaze = x[:, :, 35:43]   # [B, T, 8]
         x_expr = x[:, :, 43:48]   # [B, T, 5]
         x_va   = x[:, :, 48:50]   # [B, T, 2]
+
+        # CHECK:
+        print(f"DEBUG: x_gaze shape: {x_gaze.shape}")
+        if x_gaze.shape[-1] == 0:
+            print("ERROR: Gaze features are empty! Check your data loader.")
+
+        #### Check if the feature dimension (last dim) is 0
+        if x_gaze.shape[-1] == 0:
+            print("WARNING: Empty gaze features detected. Padding with zeros to prevent crash.")
+            # The LSTM expects input_size=8 (based on your error message)
+            expected_features = 8 
+            
+            # Create a tensor of zeros with shape [Seq_Len, Batch_Size, 8]
+            # We must match the device (CPU/GPU) and dtype of the original input
+            x_gaze = torch.zeros(
+                (x_gaze.shape[0], x_gaze.shape[1], expected_features),
+                device=x_gaze.device,
+                dtype=x_gaze.dtype
+            )
+        
+       # AU features
+        if x_AU.shape[-1] == 0:
+            print("WARNING: Empty AU features detected. Padding with zeros to prevent crash.")
+            expected_features = 35
+            x_AU = torch.zeros(
+                (x_AU.shape[0], x_AU.shape[1], expected_features),
+                device=x_AU.device,
+                dtype=x_AU.dtype
+            )
+
+        # Expression features
+        if x_expr.shape[-1] == 0:
+            print("WARNING: Empty expression features detected. Padding with zeros to prevent crash.")
+            expected_features = 5
+            x_expr = torch.zeros(
+                (x_expr.shape[0], x_expr.shape[1], expected_features),
+                device=x_expr.device,
+                dtype=x_expr.dtype
+            )
+
+        # Valence/Arousal features
+        if x_va.shape[-1] == 0:
+            print("WARNING: Empty Valence/Arousal features detected. Padding with zeros to prevent crash.")
+            expected_features = 2
+            x_va = torch.zeros(
+                (x_va.shape[0], x_va.shape[1], expected_features),
+                device=x_va.device,
+                dtype=x_va.dtype
+            )
+
 
         # 输出 lstm_out_AU 形状: [B, T, per_hidden_size * bi_weight]
         lstm_out_AU, (_, _)   = self.lstm_AU(x_AU)

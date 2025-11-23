@@ -3,3 +3,5 @@ venv/*
 *.pt
 *.mp4
 .DS_Store
+sample/*
+__pycache__
