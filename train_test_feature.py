@@ -24,8 +24,10 @@ import mediapipe as mp
 
 
 # SageMaker paths (with fallbacks for local testing)
-CHECKPOINT_DIR = os.environ.get('SM_CHECKPOINT_DIR', '/opt/ml/checkpoints')
-MODEL_DIR = os.environ.get('SM_MODEL_DIR', '/opt/ml/model')
+# CHECKPOINT_DIR = os.environ.get('SM_CHECKPOINT_DIR', '/opt/ml/checkpoints')
+CHECKPOINT_DIR = '/home/sagemaker-user/mahsa-m2m-MMPDA-sagemaker/logs'
+# MODEL_DIR = os.environ.get('SM_MODEL_DIR', '/opt/ml/model')
+MODEL_DIR = '/home/sagemaker-user/mahsa-m2m-MMPDA-sagemaker/logs'
 
 # ==================== COMPREHENSIVE WARNING SUPPRESSION ====================
 
@@ -143,7 +145,7 @@ class VideoDeceptionDataset(Dataset):
     """
 
     def __init__(self, data_root=None, annotation_file=None,
-                 num_frames=64, frame_size=(160, 160),
+                 num_frames=50, frame_size=(160, 160),
                  audio_length=16000, sample_rate=16000,
                  n_mels=128, mode='train'):
         """
@@ -179,7 +181,7 @@ class VideoDeceptionDataset(Dataset):
             self._load_from_annotation(annotation_file)
         else:
             raise ValueError("Either data_root or annotation_file must be provided")
-    
+
     def _init_mediapipe(self):
         """
         Initialize MediaPipe Face Mesh
@@ -206,14 +208,6 @@ class VideoDeceptionDataset(Dataset):
             self.face_mesh = None
             self.face_mesh_initialized = False
     
-    def cap_release_safe(cap):
-        """Safely release VideoCapture"""
-        try:
-            if cap is not None:
-                cap.release()
-        except:
-            pass
-
     def _load_from_directory(self, data_root):
         """Load videos from directory structure"""
         data_root = Path(data_root)
@@ -278,7 +272,7 @@ class VideoDeceptionDataset(Dataset):
         Return a safe dummy sample when video processing fails completely
         """
         return {
-            'vision_behaviour': torch.zeros(self.num_frames, 64, dtype=torch.float32),
+            'vision_behaviour': torch.zeros(self.num_frames, 50, dtype=torch.float32),
             'vision_face': torch.zeros(3, self.num_frames, self.frame_size[0], self.frame_size[1], dtype=torch.float32),
             'audio_mel': torch.zeros(3, self.n_mels, self.audio_length // 160 + 1, dtype=torch.float32),
             'audio_wave': torch.zeros(self.audio_length, dtype=torch.float32),
@@ -559,7 +553,7 @@ class VideoDeceptionDataset(Dataset):
         
         if not cap.isOpened():
             print(f"⚠️ OpenCV failed to open {video_name}, trying FFmpeg fallback...")
-            cap_release_safe(cap)
+            self.cap_release_safe(cap)
             return self._sample_frames_ffmpeg(video_path)
         
         try:
@@ -644,6 +638,14 @@ class VideoDeceptionDataset(Dataset):
             print(f"   Trying FFmpeg fallback...")
             return self._sample_frames_ffmpeg(video_path)
 
+    def cap_release_safe(self, cap):
+        """Safely release VideoCapture"""
+        try:
+            if cap is not None:
+                cap.release()
+        except:
+            pass
+    
     # def _sample_frames_ffmpeg(self, video_path):
     #     """
     #     Fallback method: Use FFmpeg directly to extract frames
@@ -770,7 +772,19 @@ class VideoDeceptionDataset(Dataset):
         """
         video_name = os.path.basename(video_path)
         print(f"   🔧 Using FFmpeg for: {video_name}")
+
+        # Check if FFmpeg is available
+        try:
+            subprocess.run(['ffmpeg', '-version'], capture_output=True, timeout=2, check=True)
+        except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            print(f"      ❌ FFmpeg not available, cannot process this video")
+            return None
         
+        # Initialize default values
+        duration = 0.0
+        fps = 30.0
+        total_frames = self.num_frames * 2        
+
         try:
             # Get video duration and frame count using ffprobe
             probe_cmd = [
@@ -865,7 +879,8 @@ class VideoDeceptionDataset(Dataset):
             # Ensure correct number of frames
             if len(frames) == 0:
                 print(f"      ❌ FFmpeg failed to extract any frames")
-                return None
+                return np.zeros((self.num_frames, self.frame_size[0], self.frame_size[1], 3), dtype=np.uint8)
+                # return None
             
             while len(frames) < self.num_frames:
                 frames.append(frames[-1].copy())
@@ -883,20 +898,83 @@ class VideoDeceptionDataset(Dataset):
             traceback.print_exc()
             return None
 
+    # def _extract_behavioral_features(self, frames):
+    #     """
+    #     Extract behavioral features from MediaPipe face landmarks
+
+    #     This extracts 64 features per frame including:
+    #     - Head pose estimation (3 rotation angles: pitch, yaw, roll)
+    #     - Eye aspect ratios (2 features: left, right eye openness)
+    #     - Mouth aspect ratio (1 feature: mouth openness)
+    #     - Eyebrow positions (2 features: left, right eyebrow height)
+    #     - Facial symmetry (1 feature)
+    #     - Key landmark distances (55 features: distances between important points)
+
+    #     Total: 64 features per frame
+    #     Expected output: (T, 64) where T=num_frames
+    #     """
+    #     # Initialize MediaPipe in the worker process
+    #     self._init_mediapipe()
+
+    #     all_features = []
+    #     faces_detected = 0
+
+    #     for frame_idx in range(len(frames)):
+    #         frame = frames[frame_idx]
+
+    #         # MediaPipe expects RGB images (frames are already in RGB from _sample_frames)
+    #         # Ensure correct format and dimensions
+    #         if frame.shape[0] != self.frame_size[0] or frame.shape[1] != self.frame_size[1]:
+    #             frame = cv2.resize(frame, self.frame_size)
+
+    #         # Ensure uint8 format for MediaPipe
+    #         if frame.dtype != np.uint8:
+    #             frame = frame.astype(np.uint8)
+
+    #         ######## DEBUG: Check frame quality
+    #         if frame_idx == 0 and random.random() < 0.01:  # 1% of videos
+    #             print(f"  Frame quality: min={frame.min()}, max={frame.max()}, mean={frame.mean():.1f}")
+    #             print(f"  Frame is all black: {frame.max() == 0}")
+        
+    #         # Process with MediaPipe
+    #         # FIX: Provide image dimensions to resolve NORM_RECT warning
+    #         results = self.face_mesh.process(frame)
+
+    #         if results.multi_face_landmarks and len(results.multi_face_landmarks) > 0:
+    #             landmarks = results.multi_face_landmarks[0].landmark
+    #             features = self._compute_features_from_landmarks(landmarks, frame.shape)
+    #             faces_detected += 1
+    #         else:
+    #             # No face detected, use zero features
+    #             features = np.zeros(64, dtype=np.float32)
+    #             # features = np.random.randn(64).astype(np.float32) * 0.1
+
+    #                 # 🔍 VALIDATE: Ensure exactly 64 features
+    #         if features.shape != (64,):
+    #             print(f"⚠️ WARNING: Feature shape is {features.shape}, padding/truncating to (64,)")
+    #             if features.shape[0] < 64:
+    #                 # Pad with zeros
+    #                 features = np.pad(features, (0, 64 - features.shape[0]), mode='constant')
+    #             else:
+    #                 # Truncate
+    #                 features = features[:64]
+            
+    #         all_features.append(features)
+        
+    #     ###### DEBUG: Report detection rate
+    #     if random.random() < 0.05:  # 5% of videos
+    #         print(f"  Face detection: {faces_detected}/{len(frames)} frames")
+
+    #     return np.stack(all_features, axis=0)
     def _extract_behavioral_features(self, frames):
         """
-        Extract behavioral features from MediaPipe face landmarks
-
-        This extracts 64 features per frame including:
-        - Head pose estimation (3 rotation angles: pitch, yaw, roll)
-        - Eye aspect ratios (2 features: left, right eye openness)
-        - Mouth aspect ratio (1 feature: mouth openness)
-        - Eyebrow positions (2 features: left, right eyebrow height)
-        - Facial symmetry (1 feature)
-        - Key landmark distances (55 features: distances between important points)
-
-        Total: 64 features per frame
-        Expected output: (T, 64) where T=num_frames
+        Extract 50 behavioral features per frame:
+        - 35 Action Units (AU)
+        - 8 Gaze features
+        - 5 Expression features
+        - 2 Valence/Arousal features
+        
+        Returns: (num_frames, 50) numpy array
         """
         # Initialize MediaPipe in the worker process
         self._init_mediapipe()
@@ -907,22 +985,15 @@ class VideoDeceptionDataset(Dataset):
         for frame_idx in range(len(frames)):
             frame = frames[frame_idx]
 
-            # MediaPipe expects RGB images (frames are already in RGB from _sample_frames)
             # Ensure correct format and dimensions
             if frame.shape[0] != self.frame_size[0] or frame.shape[1] != self.frame_size[1]:
-                frame = cv2.resize(frame, self.frame_size)
+                frame = cv2.resize(frame, (self.frame_size[1], self.frame_size[0]))
 
             # Ensure uint8 format for MediaPipe
             if frame.dtype != np.uint8:
                 frame = frame.astype(np.uint8)
 
-            ######## DEBUG: Check frame quality
-            if frame_idx == 0 and random.random() < 0.01:  # 1% of videos
-                print(f"  Frame quality: min={frame.min()}, max={frame.max()}, mean={frame.mean():.1f}")
-                print(f"  Frame is all black: {frame.max() == 0}")
-        
             # Process with MediaPipe
-            # FIX: Provide image dimensions to resolve NORM_RECT warning
             results = self.face_mesh.process(frame)
 
             if results.multi_face_landmarks and len(results.multi_face_landmarks) > 0:
@@ -931,194 +1002,489 @@ class VideoDeceptionDataset(Dataset):
                 faces_detected += 1
             else:
                 # No face detected, use zero features
-                features = np.zeros(64, dtype=np.float32)
-                # features = np.random.randn(64).astype(np.float32) * 0.1
+                features = np.zeros(50, dtype=np.float32)
 
-                    # 🔍 VALIDATE: Ensure exactly 64 features
-            if features.shape != (64,):
-                print(f"⚠️ WARNING: Feature shape is {features.shape}, padding/truncating to (64,)")
-                if features.shape[0] < 64:
-                    # Pad with zeros
-                    features = np.pad(features, (0, 64 - features.shape[0]), mode='constant')
+            # Validate: Ensure exactly 50 features
+            if features.shape != (50,):
+                print(f"⚠️ WARNING: Feature shape is {features.shape}, expected (50,)")
+                if features.shape[0] < 50:
+                    features = np.pad(features, (0, 50 - features.shape[0]), mode='constant')
                 else:
-                    # Truncate
-                    features = features[:64]
+                    features = features[:50]
             
             all_features.append(features)
         
-        ###### DEBUG: Report detection rate
+        # Report detection rate occasionally
         if random.random() < 0.05:  # 5% of videos
             print(f"  Face detection: {faces_detected}/{len(frames)} frames")
 
         return np.stack(all_features, axis=0)
 
-    def _compute_features_from_landmarks(self, landmarks, frame_shape):
+    # def _compute_features_from_landmarks(self, landmarks, frame_shape):
+    #     """
+    #     Compute 64 behavioral features from MediaPipe landmarks
+
+    #     MediaPipe provides 478 3D landmarks. We extract meaningful features:
+    #     """
+    #     h, w = frame_shape[:2]
+
+    #     # Convert landmarks to numpy array (normalized coordinates)
+    #     lm_array = np.array([[lm.x, lm.y, lm.z] for lm in landmarks])
+
+    #     features = []
+
+    #     # --- 1. Head Pose Estimation (3 features) ---
+    #     # Using specific facial points for pose estimation
+    #     nose_tip = lm_array[1]  # Nose tip
+    #     chin = lm_array[152]  # Chin
+    #     left_eye = lm_array[33]  # Left eye corner
+    #     right_eye = lm_array[263]  # Right eye corner
+    #     left_mouth = lm_array[61]  # Left mouth corner
+    #     right_mouth = lm_array[291]  # Right mouth corner
+
+    #     # Approximate pitch (up/down tilt)
+    #     pitch = nose_tip[1] - chin[1]
+
+    #     # Approximate yaw (left/right rotation)
+    #     yaw = (right_eye[0] - left_eye[0]) - 0.5  # Normalized difference
+
+    #     # Approximate roll (head tilt)
+    #     roll = np.arctan2(right_eye[1] - left_eye[1], right_eye[0] - left_eye[0])
+
+    #     features.extend([pitch, yaw, roll])
+
+    #     # --- 2. Eye Aspect Ratios (2 features) ---
+    #     # Left eye landmarks: 33, 160, 158, 133, 153, 144
+    #     left_eye_points = lm_array[[33, 160, 158, 133, 153, 144]]
+    #     left_ear = self._eye_aspect_ratio(left_eye_points)
+
+    #     # Right eye landmarks: 263, 387, 385, 362, 380, 373
+    #     right_eye_points = lm_array[[263, 387, 385, 362, 380, 373]]
+    #     right_ear = self._eye_aspect_ratio(right_eye_points)
+
+    #     features.extend([left_ear, right_ear])
+
+    #     # --- 3. Mouth Aspect Ratio (1 feature) ---
+    #     # Mouth landmarks: 61, 291, 0, 17, 84, 314
+    #     mouth_points = lm_array[[61, 291, 0, 17, 84, 314]]
+    #     mar = self._mouth_aspect_ratio(mouth_points)
+    #     features.append(mar)
+
+    #     # --- 4. Eyebrow Heights (2 features) ---
+    #     # Left eyebrow: 70, Right eyebrow: 300
+    #     left_eyebrow = lm_array[70][1]
+    #     right_eyebrow = lm_array[300][1]
+    #     features.extend([left_eyebrow, right_eyebrow])
+
+    #     # --- 5. Facial Symmetry (1 feature) ---
+    #     # Compare left and right sides
+    #     left_side = lm_array[234]  # Left face boundary
+    #     right_side = lm_array[454]  # Right face boundary
+    #     face_center = lm_array[1]  # Nose tip as center
+
+    #     left_dist = np.linalg.norm(left_side - face_center)
+    #     right_dist = np.linalg.norm(right_side - face_center)
+    #     symmetry = abs(left_dist - right_dist)
+    #     features.append(symmetry)
+
+    #     # --- 6. Key Landmark Distances (55 features) ---
+    #     # Distances between important landmark pairs
+    #     important_pairs = [
+    #         (33, 263),  # Eye to eye
+    #         (61, 291),  # Mouth corners
+    #         (1, 152),  # Nose to chin
+    #         (10, 152),  # Forehead to chin
+    #         (33, 61),  # Left eye to left mouth
+    #         (263, 291),  # Right eye to right mouth
+    #         (33, 1),  # Left eye to nose
+    #         (263, 1),  # Right eye to nose
+    #         (61, 1),  # Left mouth to nose
+    #         (291, 1),  # Right mouth to nose
+    #         # Add more pairs for total 55 features
+    #     ]
+
+    #     # Calculate distances for important pairs
+    #     for i, j in important_pairs:
+    #         dist = np.linalg.norm(lm_array[i] - lm_array[j])
+    #         features.append(dist)
+
+    #     # Add more distance features to reach 55
+    #     # Using contour points and other key landmarks
+    #     additional_indices = [
+    #         (70, 300),  # Eyebrow to eyebrow
+    #         (33, 133),  # Left eye width
+    #         (263, 362),  # Right eye width
+    #         (78, 308),  # Upper lip
+    #         (13, 14),  # Lower face
+    #         (10, 152),  # Full face height
+    #         (234, 454),  # Face width
+    #         (127, 356),  # Nose width
+    #     ]
+
+    #     for i, j in additional_indices:
+    #         dist = np.linalg.norm(lm_array[i] - lm_array[j])
+    #         features.append(dist)
+
+    #     # Fill remaining features with landmark position statistics
+    #     while len(features) < 64:
+    #         # Add variance and mean of landmark positions as features
+    #         if len(features) < 64:
+    #             features.append(np.mean(lm_array[:, 0]))  # Mean x
+    #         if len(features) < 64:
+    #             features.append(np.mean(lm_array[:, 1]))  # Mean y
+    #         if len(features) < 64:
+    #             features.append(np.std(lm_array[:, 0]))  # Std x
+    #         if len(features) < 64:
+    #             features.append(np.std(lm_array[:, 1]))  # Std y
+    #         if len(features) < 64:
+    #             features.append(np.mean(lm_array[:, 2]))  # Mean z (depth)
+    #         if len(features) < 64:
+    #             features.append(np.std(lm_array[:, 2]))  # Std z
+    #         if len(features) < 64:
+    #             # Add more statistical features
+    #             features.append(np.max(lm_array[:, 0]) - np.min(lm_array[:, 0]))  # x range
+    #         if len(features) < 64:
+    #             features.append(np.max(lm_array[:, 1]) - np.min(lm_array[:, 1]))  # y range
+
+    #     # Ensure exactly 64 features
+    #     features = np.array(features[:64], dtype=np.float32)
+
+    #     # 🔍 ENSURE EXACTLY 64
+    #     if len(features) < 64:
+    #         # Pad with zeros
+    #         features = np.pad(features, (0, 64 - len(features)), mode='constant')
+    #     elif len(features) > 64:
+    #         # Truncate
+    #         features = features[:64]
+        
+    #     assert features.shape == (64,), f"❌ Features shape {features.shape}, expected (64,)"
+        
+
+    #     return features
+
+    def _compute_features_from_landmarks(self, landmarks, image_shape):
         """
-        Compute 64 behavioral features from MediaPipe landmarks
-
-        MediaPipe provides 478 3D landmarks. We extract meaningful features:
+        Compute 50-dimensional feature vector from MediaPipe 478 face landmarks:
+        
+        Feature breakdown:
+        [0:35]   - Action Units (35)
+        [35:43]  - Gaze features (8)
+        [43:48]  - Expression features (5)
+        [48:50]  - Valence/Arousal (2)
         """
-        h, w = frame_shape[:2]
-
-        # Convert landmarks to numpy array (normalized coordinates)
-        lm_array = np.array([[lm.x, lm.y, lm.z] for lm in landmarks])
-
+        h, w = image_shape[:2]
+        
+        # Convert landmarks to numpy array (x, y, z coordinates normalized)
+        points = np.array([[lm.x * w, lm.y * h, lm.z * w] for lm in landmarks])
+        
         features = []
-
-        # --- 1. Head Pose Estimation (3 features) ---
-        # Using specific facial points for pose estimation
-        nose_tip = lm_array[1]  # Nose tip
-        chin = lm_array[152]  # Chin
-        left_eye = lm_array[33]  # Left eye corner
-        right_eye = lm_array[263]  # Right eye corner
-        left_mouth = lm_array[61]  # Left mouth corner
-        right_mouth = lm_array[291]  # Right mouth corner
-
-        # Approximate pitch (up/down tilt)
-        pitch = nose_tip[1] - chin[1]
-
-        # Approximate yaw (left/right rotation)
-        yaw = (right_eye[0] - left_eye[0]) - 0.5  # Normalized difference
-
-        # Approximate roll (head tilt)
-        roll = np.arctan2(right_eye[1] - left_eye[1], right_eye[0] - left_eye[0])
-
-        features.extend([pitch, yaw, roll])
-
-        # --- 2. Eye Aspect Ratios (2 features) ---
-        # Left eye landmarks: 33, 160, 158, 133, 153, 144
-        left_eye_points = lm_array[[33, 160, 158, 133, 153, 144]]
-        left_ear = self._eye_aspect_ratio(left_eye_points)
-
-        # Right eye landmarks: 263, 387, 385, 362, 380, 373
-        right_eye_points = lm_array[[263, 387, 385, 362, 380, 373]]
-        right_ear = self._eye_aspect_ratio(right_eye_points)
-
-        features.extend([left_ear, right_ear])
-
-        # --- 3. Mouth Aspect Ratio (1 feature) ---
-        # Mouth landmarks: 61, 291, 0, 17, 84, 314
-        mouth_points = lm_array[[61, 291, 0, 17, 84, 314]]
-        mar = self._mouth_aspect_ratio(mouth_points)
-        features.append(mar)
-
-        # --- 4. Eyebrow Heights (2 features) ---
-        # Left eyebrow: 70, Right eyebrow: 300
-        left_eyebrow = lm_array[70][1]
-        right_eyebrow = lm_array[300][1]
-        features.extend([left_eyebrow, right_eyebrow])
-
-        # --- 5. Facial Symmetry (1 feature) ---
-        # Compare left and right sides
-        left_side = lm_array[234]  # Left face boundary
-        right_side = lm_array[454]  # Right face boundary
-        face_center = lm_array[1]  # Nose tip as center
-
-        left_dist = np.linalg.norm(left_side - face_center)
-        right_dist = np.linalg.norm(right_side - face_center)
-        symmetry = abs(left_dist - right_dist)
-        features.append(symmetry)
-
-        # --- 6. Key Landmark Distances (55 features) ---
-        # Distances between important landmark pairs
-        important_pairs = [
-            (33, 263),  # Eye to eye
-            (61, 291),  # Mouth corners
-            (1, 152),  # Nose to chin
-            (10, 152),  # Forehead to chin
-            (33, 61),  # Left eye to left mouth
-            (263, 291),  # Right eye to right mouth
-            (33, 1),  # Left eye to nose
-            (263, 1),  # Right eye to nose
-            (61, 1),  # Left mouth to nose
-            (291, 1),  # Right mouth to nose
-            # Add more pairs for total 55 features
-        ]
-
-        # Calculate distances for important pairs
-        for i, j in important_pairs:
-            dist = np.linalg.norm(lm_array[i] - lm_array[j])
-            features.append(dist)
-
-        # Add more distance features to reach 55
-        # Using contour points and other key landmarks
-        additional_indices = [
-            (70, 300),  # Eyebrow to eyebrow
-            (33, 133),  # Left eye width
-            (263, 362),  # Right eye width
-            (78, 308),  # Upper lip
-            (13, 14),  # Lower face
-            (10, 152),  # Full face height
-            (234, 454),  # Face width
-            (127, 356),  # Nose width
-        ]
-
-        for i, j in additional_indices:
-            dist = np.linalg.norm(lm_array[i] - lm_array[j])
-            features.append(dist)
-
-        # Fill remaining features with landmark position statistics
-        while len(features) < 64:
-            # Add variance and mean of landmark positions as features
-            if len(features) < 64:
-                features.append(np.mean(lm_array[:, 0]))  # Mean x
-            if len(features) < 64:
-                features.append(np.mean(lm_array[:, 1]))  # Mean y
-            if len(features) < 64:
-                features.append(np.std(lm_array[:, 0]))  # Std x
-            if len(features) < 64:
-                features.append(np.std(lm_array[:, 1]))  # Std y
-            if len(features) < 64:
-                features.append(np.mean(lm_array[:, 2]))  # Mean z (depth)
-            if len(features) < 64:
-                features.append(np.std(lm_array[:, 2]))  # Std z
-            if len(features) < 64:
-                # Add more statistical features
-                features.append(np.max(lm_array[:, 0]) - np.min(lm_array[:, 0]))  # x range
-            if len(features) < 64:
-                features.append(np.max(lm_array[:, 1]) - np.min(lm_array[:, 1]))  # y range
-
-        # Ensure exactly 64 features
-        features = np.array(features[:64], dtype=np.float32)
-
-        # 🔍 ENSURE EXACTLY 64
-        if len(features) < 64:
-            # Pad with zeros
-            features = np.pad(features, (0, 64 - len(features)), mode='constant')
-        elif len(features) > 64:
-            # Truncate
-            features = features[:64]
         
-        assert features.shape == (64,), f"❌ Features shape {features.shape}, expected (64,)"
+        # ============================================================
+        # PART 1: ACTION UNITS (35 features)
+        # ============================================================
         
-
+        # --- Eyes (12 features) ---
+        # AU5 (Upper Lid Raiser), AU7 (Lid Tightener), AU43 (Eyes Closed)
+        left_eye_openness = self._eye_aspect_ratio(points, side='left')
+        right_eye_openness = self._eye_aspect_ratio(points, side='right')
+        
+        # Eye widths
+        left_eye_width = np.linalg.norm(points[33] - points[133])
+        right_eye_width = np.linalg.norm(points[362] - points[263])
+        
+        # Inter-eye distance
+        eye_distance = np.linalg.norm(points[33] - points[263])
+        
+        # Upper/lower lid positions
+        left_upper_lid = np.linalg.norm(points[159] - points[145])
+        right_upper_lid = np.linalg.norm(points[386] - points[374])
+        left_lower_lid = np.linalg.norm(points[145] - points[153])
+        right_lower_lid = np.linalg.norm(points[374] - points[380])
+        
+        # Eye squint/tightening
+        left_eye_squint = np.linalg.norm(points[159] - points[153])
+        right_eye_squint = np.linalg.norm(points[386] - points[380])
+        
+        # Eye symmetry
+        eye_symmetry = abs(left_eye_width - right_eye_width) / (eye_distance + 1e-6)
+        
+        features.extend([
+            left_eye_openness, right_eye_openness, left_eye_width, right_eye_width,
+            eye_distance, left_upper_lid, right_upper_lid, left_lower_lid, right_lower_lid,
+            left_eye_squint, right_eye_squint, eye_symmetry
+        ])  # 12 features
+        
+        # --- Eyebrows (8 features) ---
+        # AU1 (Inner Brow Raiser), AU2 (Outer Brow Raiser), AU4 (Brow Lowerer)
+        left_brow_height = self._eyebrow_height(points, side='left')
+        right_brow_height = self._eyebrow_height(points, side='right')
+        
+        # Inner brow points
+        left_inner_brow = np.linalg.norm(points[70] - points[27])   # Left inner brow to nose bridge
+        right_inner_brow = np.linalg.norm(points[300] - points[27]) # Right inner brow to nose bridge
+        
+        # Outer brow points
+        left_outer_brow = np.linalg.norm(points[105] - points[33])  # Left outer brow to eye
+        right_outer_brow = np.linalg.norm(points[334] - points[263]) # Right outer brow to eye
+        
+        # Brow distance and angle
+        brow_distance = np.linalg.norm(points[70] - points[300])
+        brow_angle = np.arctan2(points[300][1] - points[70][1], 
+                                points[300][0] - points[70][0])
+        
+        features.extend([
+            left_brow_height, right_brow_height, left_inner_brow, right_inner_brow,
+            left_outer_brow, right_outer_brow, brow_distance, brow_angle
+        ])  # 8 features
+        
+        # --- Mouth (10 features) ---
+        # AU10 (Upper Lip Raiser), AU12 (Lip Corner Puller/Smile), AU15 (Lip Corner Depressor)
+        # AU20 (Lip Stretcher), AU23 (Lip Tightener), AU25 (Lips Part), AU26 (Jaw Drop)
+        mouth_aspect_ratio = self._mouth_aspect_ratio(points)
+        
+        # Mouth dimensions
+        mouth_width = np.linalg.norm(points[61] - points[291])
+        mouth_height = np.linalg.norm(points[13] - points[14])
+        
+        # Lip positions
+        upper_lip_center = np.linalg.norm(points[0] - points[13])
+        lower_lip_center = np.linalg.norm(points[17] - points[14])
+        
+        # Lip corners
+        left_corner_height = np.linalg.norm(points[61] - points[291]) 
+        right_corner_height = np.linalg.norm(points[291] - points[61])
+        
+        # Mouth opening and lip distance
+        mouth_opening = np.linalg.norm(points[13] - points[14])
+        lip_distance = np.linalg.norm(points[0] - points[17])
+        
+        # Mouth asymmetry
+        left_mouth = np.linalg.norm(points[61] - points[0])
+        right_mouth = np.linalg.norm(points[291] - points[0])
+        mouth_asymmetry = abs(left_mouth - right_mouth) / (mouth_width + 1e-6)
+        
+        features.extend([
+            mouth_aspect_ratio, mouth_width, mouth_height, upper_lip_center, lower_lip_center,
+            left_corner_height, right_corner_height, mouth_opening, lip_distance, mouth_asymmetry
+        ])  # 10 features
+        
+        # --- Nose & Cheeks (5 features) ---
+        # AU9 (Nose Wrinkler), AU11 (Nasolabial Deepener)
+        nose_width = np.linalg.norm(points[129] - points[358])
+        nose_tip_height = np.linalg.norm(points[1] - points[2])
+        
+        # Nasolabial folds (cheek to mouth)
+        left_nasolabial = np.linalg.norm(points[206] - points[61])
+        right_nasolabial = np.linalg.norm(points[426] - points[291])
+        
+        # Nose to chin
+        nose_to_chin = np.linalg.norm(points[1] - points[152])
+        
+        features.extend([
+            nose_width, nose_tip_height, left_nasolabial, right_nasolabial, nose_to_chin
+        ])  # 5 features
+        
+        # Total AU features: 12 + 8 + 10 + 5 = 35 ✓
+        
+        # ============================================================
+        # PART 2: GAZE FEATURES (8 features)
+        # ============================================================
+        
+        # Head pose (pitch, yaw, roll)
+        pitch, yaw, roll = self._head_pose(points, w, h)
+        
+        # Eye gaze direction (simplified estimation)
+        left_eye_center = (points[33] + points[133]) / 2
+        right_eye_center = (points[362] + points[263]) / 2
+        nose_bridge = points[168]
+        
+        # Horizontal and vertical gaze for each eye
+        left_gaze_h = (left_eye_center[0] - nose_bridge[0]) / w
+        left_gaze_v = (left_eye_center[1] - nose_bridge[1]) / h
+        right_gaze_h = (right_eye_center[0] - nose_bridge[0]) / w
+        right_gaze_v = (right_eye_center[1] - nose_bridge[1]) / h
+        
+        # Gaze convergence (measure of focus)
+        gaze_convergence = abs(left_gaze_h - right_gaze_h)
+        
+        features.extend([
+            pitch, yaw, roll,
+            left_gaze_h, left_gaze_v, right_gaze_h, right_gaze_v,
+            gaze_convergence
+        ])  # 8 features
+        
+        # ============================================================
+        # PART 3: EXPRESSION FEATURES (5 features)
+        # ============================================================
+        
+        # Overall facial symmetry
+        symmetry = self._facial_symmetry(points)
+        
+        # Face dimensions
+        face_width = np.linalg.norm(points[234] - points[454])
+        face_height = np.linalg.norm(points[10] - points[152])
+        
+        # Expression activity indicators
+        upper_face_activity = (left_brow_height + right_brow_height) / 2
+        lower_face_activity = mouth_aspect_ratio
+        
+        features.extend([
+            symmetry, face_width, face_height, upper_face_activity, lower_face_activity
+        ])  # 5 features
+        
+        # ============================================================
+        # PART 4: VALENCE/AROUSAL (2 features)
+        # ============================================================
+        
+        # Valence: positive (smile) vs negative (frown)
+        # Use mouth corner positions relative to face center
+        mouth_corners_avg = (left_mouth + right_mouth) / 2
+        valence = mouth_corners_avg / (face_height + 1e-6)
+        
+        # Arousal: high (alert, wide eyes) vs low (calm, relaxed)
+        # Combine eye openness and mouth opening
+        arousal = (left_eye_openness + right_eye_openness + mouth_aspect_ratio) / 3.0
+        
+        features.extend([valence, arousal])  # 2 features
+        
+        # ============================================================
+        # FINALIZE
+        # ============================================================
+        
+        features = np.array(features, dtype=np.float32)
+        
+        # Sanity check
+        assert len(features) == 50, f"Expected 50 features, got {len(features)}"
+        
+        # Clip extreme values
+        features = np.clip(features, -100, 100)
+        
+        # Normalize
+        mean = features.mean()
+        std = features.std()
+        if std > 1e-6:
+            features = (features - mean) / std
+        
         return features
 
-    def _eye_aspect_ratio(self, eye_points):
-        """Calculate Eye Aspect Ratio (EAR) for eye openness"""
+    # def _eye_aspect_ratio(self, eye_points):
+    #     """Calculate Eye Aspect Ratio (EAR) for eye openness"""
+    #     # Vertical distances
+    #     v1 = np.linalg.norm(eye_points[1] - eye_points[5])
+    #     v2 = np.linalg.norm(eye_points[2] - eye_points[4])
+
+    #     # Horizontal distance
+    #     h = np.linalg.norm(eye_points[0] - eye_points[3])
+
+    #     # EAR formula
+    #     ear = (v1 + v2) / (2.0 * h + 1e-6)
+    #     return ear
+    def _eye_aspect_ratio(self, points, side='left'):
+        """Calculate Eye Aspect Ratio (EAR) for blink detection"""
+        if side == 'left':
+            # Left eye landmarks
+            p1, p2, p3, p4, p5, p6 = 33, 160, 158, 133, 153, 144
+        else:
+            # Right eye landmarks
+            p1, p2, p3, p4, p5, p6 = 362, 385, 387, 263, 373, 380
+        
         # Vertical distances
-        v1 = np.linalg.norm(eye_points[1] - eye_points[5])
-        v2 = np.linalg.norm(eye_points[2] - eye_points[4])
-
+        v1 = np.linalg.norm(points[p2] - points[p6])
+        v2 = np.linalg.norm(points[p3] - points[p5])
+        
         # Horizontal distance
-        h = np.linalg.norm(eye_points[0] - eye_points[3])
-
+        h = np.linalg.norm(points[p1] - points[p4])
+        
         # EAR formula
         ear = (v1 + v2) / (2.0 * h + 1e-6)
         return ear
 
-    def _mouth_aspect_ratio(self, mouth_points):
-        """Calculate Mouth Aspect Ratio (MAR) for mouth openness"""
-        # Vertical distances
-        v1 = np.linalg.norm(mouth_points[2] - mouth_points[3])
-        v2 = np.linalg.norm(mouth_points[4] - mouth_points[5])
+    def _eyebrow_height(self, points, side='left'):
+        """Calculate eyebrow height relative to eye"""
+        if side == 'left':
+            brow_point = points[70]   # Left eyebrow center
+            eye_point = points[33]    # Left eye inner corner
+        else:
+            brow_point = points[300]  # Right eyebrow center
+            eye_point = points[263]   # Right eye inner corner
+        
+        height = np.linalg.norm(brow_point - eye_point)
+        return height
 
+    # def _mouth_aspect_ratio(self, mouth_points):
+    #     """Calculate Mouth Aspect Ratio (MAR) for mouth openness"""
+    #     # Vertical distances
+    #     v1 = np.linalg.norm(mouth_points[2] - mouth_points[3])
+    #     v2 = np.linalg.norm(mouth_points[4] - mouth_points[5])
+
+    #     # Horizontal distance
+    #     h = np.linalg.norm(mouth_points[0] - mouth_points[1])
+
+    #     # MAR formula
+    #     mar = (v1 + v2) / (2.0 * h + 1e-6)
+    #     return mar
+    def _mouth_aspect_ratio(self, points):
+        """Calculate Mouth Aspect Ratio (MAR)"""
+        # Upper and lower lip center points
+        upper = points[13]
+        lower = points[14]
+        
+        # Left and right mouth corners
+        left = points[61]
+        right = points[291]
+        
+        # Vertical distance
+        v = np.linalg.norm(upper - lower)
+        
         # Horizontal distance
-        h = np.linalg.norm(mouth_points[0] - mouth_points[1])
-
+        h = np.linalg.norm(left - right)
+        
         # MAR formula
-        mar = (v1 + v2) / (2.0 * h + 1e-6)
+        mar = v / (h + 1e-6)
         return mar
+    
+    def _head_pose(self, points, w, h):
+        """Estimate head pose (pitch, yaw, roll) from facial landmarks"""
+        # Key points for pose estimation
+        nose_tip = points[1]
+        chin = points[152]
+        left_eye = points[33]
+        right_eye = points[263]
+        left_mouth = points[61]
+        right_mouth = points[291]
+        
+        # Yaw (left-right head rotation)
+        eye_center = (left_eye + right_eye) / 2
+        yaw = np.arctan2(nose_tip[0] - eye_center[0], nose_tip[2] - eye_center[2] + 1e-6)
+        
+        # Pitch (up-down head rotation)
+        pitch = np.arctan2(nose_tip[1] - chin[1], abs(nose_tip[2] - chin[2]) + 1e-6)
+        
+        # Roll (head tilt)
+        roll = np.arctan2(right_eye[1] - left_eye[1], right_eye[0] - left_eye[0] + 1e-6)
+        
+        return pitch, yaw, roll
+
+    def _facial_symmetry(self, points):
+        """Calculate facial symmetry score"""
+        # Compare left and right landmarks
+        left_landmarks = [33, 133, 61, 206]  # Left eye, mouth, cheek
+        right_landmarks = [263, 362, 291, 426]  # Right eye, mouth, cheek
+        
+        # Get face center (nose tip)
+        center_x = points[1][0]
+        
+        # Calculate symmetry for each pair
+        symmetry_scores = []
+        for left_idx, right_idx in zip(left_landmarks, right_landmarks):
+            left_dist = abs(points[left_idx][0] - center_x)
+            right_dist = abs(points[right_idx][0] - center_x)
+            
+            # Symmetry score (closer to 1 = more symmetric)
+            score = 1.0 - abs(left_dist - right_dist) / (left_dist + right_dist + 1e-6)
+            symmetry_scores.append(score)
+        
+        return np.mean(symmetry_scores)
 
     def __len__(self):
         return len(self.video_list)
@@ -1157,9 +1523,9 @@ class VideoDeceptionDataset(Dataset):
             behavioral_features = self._extract_behavioral_features(frames)
 
             # 🔍 Validate behavioral features shape
-            if behavioral_features.shape != (self.num_frames, 64):
+            if behavioral_features.shape != (self.num_frames, 50): #64
                 print(f"⚠️ Invalid behavioral features shape {behavioral_features.shape} for {os.path.basename(video_path)}")
-                behavioral_features = np.zeros((self.num_frames, 64), dtype=np.float32)
+                behavioral_features = np.zeros((self.num_frames, 50), dtype=np.float32) #64
             
             # Convert face frames to tensor: (T, H, W, C) -> (C, T, H, W) for the model
             frames = torch.from_numpy(frames).permute(3, 0, 1, 2).float()
@@ -1177,10 +1543,6 @@ class VideoDeceptionDataset(Dataset):
             # Convert behavioral features to tensor
             behavioral_features = torch.from_numpy(behavioral_features).float()
 
-            # # 🔍 DEBUG: Print tensor shapes
-            # if idx == 0:
-            #     print(f"  Behavioral tensor shape: {behavioral_features.shape}")
-            #     print(f"  Expected shape: ({self.num_frames}, 64)\n")
             
             sample = {
                 'vision_behaviour': behavioral_features,  # (T=64, 64)
