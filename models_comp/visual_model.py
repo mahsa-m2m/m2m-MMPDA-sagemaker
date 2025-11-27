@@ -118,6 +118,11 @@ class AU_GAZE_Affect7_LSTM_MLP(nn.Module):
     def forward(self, x):
 
         # print(f"x shape: {x.shape}")  # should be [B, T, 50]
+        
+        # Move to GPU/CPU
+        target_device = self.lstm_AU.weight_ih_l0.device
+        if x.device != target_device:
+            x = x.to(target_device)
 
         B, C, T = x.shape  # e.g., [B, 50, 64]
         x = x.permute(0, 2, 1)  # -> [B, T, C=50]
@@ -317,10 +322,17 @@ class ResNet18_LSTM(nn.Module):
     def forward(self, x):
         [B, C, T, H, W] = x.shape
 
+        # 1. Device Safety: Ensure input x matches the model weights
+        # (This handles the case if x accidentally came in on CPU)
+        if x.device != self.fc.weight.device:
+            x = x.to(self.fc.weight.device)
+
         # x = x.permute(0, 2, 1, 3, 4)
 
         # fs = Variable(torch.zeros(B, T, self.num_ftrs)).cuda()
-        fs = Variable(torch.zeros(B, T, self.num_ftrs))
+        # fs = Variable(torch.zeros(B, T, self.num_ftrs))
+        fs = torch.zeros(B, T, self.num_ftrs, device=x.device)
+
 
         for ii in range(T):
             h = self.features(x[:, :, ii, :, :])

@@ -17,23 +17,23 @@ estimator = PyTorch(
     entry_point='train_test_feature.py',
     source_dir='.',  # Uploads all files in current directory
     role=role,
-    instance_type='ml.g4dn.xlarge',  # 1x NVIDIA T4 GPU, 16GB VRAM
+    instance_type='g4dn.2xlarge',  # ml.g4dn.xlarge = 1x NVIDIA T4 GPU, 16GB VRAM / ml.g5.xlarge / g4dn.2xlarge
     instance_count=1,
     framework_version='2.0.0',
     py_version='py310',  # ← Changed to py310 (py311 not available)
     output_path=f's3://{BUCKET_NAME}/output/',
     
     environment={
-        'PYTHONUNBUFFERED': '1',        # Forces prints to show up immediately
+        'PYTHONUNBUFFERED': '0',        # Forces prints to show up immediately
         'SM_CHECKPOINT_DIR': '/opt/ml/checkpoints' 
     },
     # These become CLI args: --train_root, --val_root, etc.
     hyperparameters={
-        'batchsize': 4,
+        'batchsize': 16,
         'max_epochs': 30,
         'fusion_type': 'mult',
         'num_frames': 32,
-        'lr': 5e-4,
+        'lr': 5e-3,
         'train_root': '/opt/ml/input/data/training',
         'val_root':   '/opt/ml/input/data/validation',
     },

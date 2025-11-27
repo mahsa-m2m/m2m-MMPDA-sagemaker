@@ -1,0 +1,5 @@
+sample/
+.git/
+__pycache__/
+*.mp4
+*.mkv

@@ -20,14 +20,18 @@ import logging
 import traceback 
 import mediapipe as mp
 
+from sklearn.metrics import (
+    accuracy_score, precision_score, recall_score, f1_score,
+    confusion_matrix, classification_report, roc_auc_score
+)
 
 
 
 # SageMaker paths (with fallbacks for local testing)
-# CHECKPOINT_DIR = os.environ.get('SM_CHECKPOINT_DIR', '/opt/ml/checkpoints')
-CHECKPOINT_DIR = '/home/sagemaker-user/mahsa-m2m-MMPDA-sagemaker/logs'
-# MODEL_DIR = os.environ.get('SM_MODEL_DIR', '/opt/ml/model')
-MODEL_DIR = '/home/sagemaker-user/mahsa-m2m-MMPDA-sagemaker/logs'
+CHECKPOINT_DIR = os.environ.get('SM_CHECKPOINT_DIR', '/opt/ml/checkpoints')
+# CHECKPOINT_DIR = '/home/sagemaker-user/mahsa-m2m-MMPDA-sagemaker/logs'
+MODEL_DIR = os.environ.get('SM_MODEL_DIR', '/opt/ml/model')
+# MODEL_DIR = '/home/sagemaker-user/mahsa-m2m-MMPDA-sagemaker/logs'
 
 # ==================== COMPREHENSIVE WARNING SUPPRESSION ====================
 
@@ -88,35 +92,31 @@ from utils import AvgrageMeter, performances
 import DALoss
 import DANetwork
 
-
-# orig_stdout = sys.stdout
-# orig_stderr = sys.stderr
-
-# class Logger(object):
-#     def __init__(self, filename, stream):
-#         self.terminal = stream
-#         self.log = open(filename, "a")
-
-#     def write(self, message):
-#         self.terminal.write(message)
-#         self.log.write(message)
-#         self.log.flush()
-
-#     def flush(self):
-#         self.terminal.flush()
-#         self.log.flush()
-
-# # 1. Define the checkpoint path
-# chk_dir = os.environ.get('SM_CHECKPOINT_DIR', '/opt/ml/checkpoints')
-# os.makedirs(chk_dir, exist_ok=True)
-
-# # 2. Redirect
-# log_path = os.path.join(chk_dir, 'full_execution_log.txt')
-# sys.stdout = Logger(log_path, orig_stdout)
-# sys.stderr = Logger(log_path, orig_stderr)
-
-# print(f"✅ Logging started to {log_path}")
-
+def install_system_dependencies():
+    """
+    Installs system-level dependencies required for Video/Audio processing
+    and OpenCV on standard SageMaker containers.
+    """
+    print("⚙️ Checking system dependencies...")
+    try:
+        # We use ffmpeg as a proxy to check if we've already installed packages
+        subprocess.check_call(['ffmpeg', '-version'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        print("   ✅ System dependencies appear to be installed.")
+    except (OSError, subprocess.CalledProcessError):
+        print("   🔧 System dependencies missing. Installing via apt-get...")
+        try:
+            # Install ALL required libraries in one go
+            # 1. ffmpeg: Video processing
+            # 2. libsndfile1: Audio loading (librosa)
+            # 3. libgl1 & libglib2.0-0: OpenCV graphics dependencies
+            cmd = 'apt-get update -y && apt-get install -y ffmpeg libsndfile1 libgl1 libglib2.0-0'
+            
+            subprocess.check_call(cmd, shell=True)
+            print("   ✅ All system dependencies installed successfully.")
+        except Exception as e:
+            print(f"   ❌ Failed to install dependencies: {e}")
+            # We don't exit here, we let the script try to run anyway, 
+            # though it will likely crash on import.
 
 def setup_seed(seed):
     np.random.seed(seed)
@@ -281,111 +281,111 @@ class VideoDeceptionDataset(Dataset):
         }
     
     # def _extract_audio(self, video_path):
-        """
-        Extract audio from video and create mel spectrogram
-        FIX: Use scipy resampler (no resampy dependency) and torchaudio as fallback
-        """
-        try:
-            # Method 1: Try librosa with scipy backend (no resampy needed)
-            y, sr = librosa.load(
-                video_path,
-                sr=self.sample_rate,
-                mono=True,
-                res_type='soxr_hq'  # High-quality scipy resampler
-            )
+        # """
+        # Extract audio from video and create mel spectrogram
+        # FIX: Use scipy resampler (no resampy dependency) and torchaudio as fallback
+        # """
+        # try:
+        #     # Method 1: Try librosa with scipy backend (no resampy needed)
+        #     y, sr = librosa.load(
+        #         video_path,
+        #         sr=self.sample_rate,
+        #         mono=True,
+        #         res_type='soxr_hq'  # High-quality scipy resampler
+        #     )
 
-            # Convert to torch tensor
-            waveform = torch.from_numpy(y).float()
+        #     # Convert to torch tensor
+        #     waveform = torch.from_numpy(y).float()
 
-        except Exception as e1:
-            try:
-                # Method 2: Fallback to torchaudio (works with more formats)
-                waveform, sr = torchaudio.load(video_path)
+        # except Exception as e1:
+        #     try:
+        #         # Method 2: Fallback to torchaudio (works with more formats)
+        #         waveform, sr = torchaudio.load(video_path)
 
-                # Convert to mono if stereo
-                if waveform.shape[0] > 1:
-                    waveform = torch.mean(waveform, dim=0)
-                else:
-                    waveform = waveform.squeeze(0)
+        #         # Convert to mono if stereo
+        #         if waveform.shape[0] > 1:
+        #             waveform = torch.mean(waveform, dim=0)
+        #         else:
+        #             waveform = waveform.squeeze(0)
 
-                # Resample if needed using torchaudio
-                if sr != self.sample_rate:
-                    resampler = torchaudio.transforms.Resample(sr, self.sample_rate)
-                    waveform = resampler(waveform.unsqueeze(0)).squeeze(0)
+        #         # Resample if needed using torchaudio
+        #         if sr != self.sample_rate:
+        #             resampler = torchaudio.transforms.Resample(sr, self.sample_rate)
+        #             waveform = resampler(waveform.unsqueeze(0)).squeeze(0)
 
-            except Exception as e2:
-                # Method 3: Extract audio using FFmpeg first
-                try:
-                    with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp:
-                        tmp_path = tmp.name
+        #     except Exception as e2:
+        #         # Method 3: Extract audio using FFmpeg first
+        #         try:
+        #             with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp:
+        #                 tmp_path = tmp.name
 
-                    cmd = [
-                        'ffmpeg', '-i', video_path,
-                        '-vn', '-acodec', 'pcm_s16le',
-                        '-ar', str(self.sample_rate),
-                        '-ac', '1', '-y',
-                        '-loglevel', 'quiet',
-                        tmp_path
-                    ]
-                    subprocess.run(cmd, check=True, timeout=30,
-                                   stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+        #             cmd = [
+        #                 'ffmpeg', '-i', video_path,
+        #                 '-vn', '-acodec', 'pcm_s16le',
+        #                 '-ar', str(self.sample_rate),
+        #                 '-ac', '1', '-y',
+        #                 '-loglevel', 'quiet',
+        #                 tmp_path
+        #             ]
+        #             subprocess.run(cmd, check=True, timeout=30,
+        #                            stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
 
-                    # Load extracted audio
-                    y, sr = librosa.load(tmp_path, sr=self.sample_rate, mono=True)
-                    waveform = torch.from_numpy(y).float()
+        #             # Load extracted audio
+        #             y, sr = librosa.load(tmp_path, sr=self.sample_rate, mono=True)
+        #             waveform = torch.from_numpy(y).float()
 
-                    os.remove(tmp_path)
+        #             os.remove(tmp_path)
 
-                except Exception as e3:
-                    # All methods failed - use silent audio
-                    if random.random() < 0.05:  # Print 5% of errors
-                        print(f"Note: All audio extraction methods failed for {os.path.basename(video_path)}")
-                    waveform = torch.zeros(self.audio_length)
+        #         except Exception as e3:
+        #             # All methods failed - use silent audio
+        #             if random.random() < 0.05:  # Print 5% of errors
+        #                 print(f"Note: All audio extraction methods failed for {os.path.basename(video_path)}")
+        #             waveform = torch.zeros(self.audio_length)
 
-        # Pad or truncate to desired length
-        if waveform.shape[0] < self.audio_length:
-            padding = self.audio_length - waveform.shape[0]
-            waveform = F.pad(waveform.unsqueeze(0), (0, padding)).squeeze(0)
-        else:
-            waveform = waveform[:self.audio_length]
+        # # Pad or truncate to desired length
+        # if waveform.shape[0] < self.audio_length:
+        #     padding = self.audio_length - waveform.shape[0]
+        #     waveform = F.pad(waveform.unsqueeze(0), (0, padding)).squeeze(0)
+        # else:
+        #     waveform = waveform[:self.audio_length]
 
-        # Add channel dimension for mel transform
-        waveform_with_channel = waveform.unsqueeze(0)
+        # # Add channel dimension for mel transform
+        # waveform_with_channel = waveform.unsqueeze(0)
 
-        # Create mel spectrogram with optimized parameters
-        n_fft = 2048
-        hop_length = 512
+        # # Create mel spectrogram with optimized parameters
+        # n_fft = 2048
+        # hop_length = 512
 
-        mel_transform = torchaudio.transforms.MelSpectrogram(
-            sample_rate=self.sample_rate,
-            n_fft=n_fft,
-            win_length=n_fft,
-            hop_length=hop_length,
-            n_mels=self.n_mels,
-            f_min=20.0,
-            f_max=min(8000.0, self.sample_rate // 2),
-            power=2.0,
-            norm='slaney',
-            mel_scale='htk'
-        )
+        # mel_transform = torchaudio.transforms.MelSpectrogram(
+        #     sample_rate=self.sample_rate,
+        #     n_fft=n_fft,
+        #     win_length=n_fft,
+        #     hop_length=hop_length,
+        #     n_mels=self.n_mels,
+        #     f_min=20.0,
+        #     f_max=min(8000.0, self.sample_rate // 2),
+        #     power=2.0,
+        #     norm='slaney',
+        #     mel_scale='htk'
+        # )
 
-        mel_spec = mel_transform(waveform_with_channel)
+        # mel_spec = mel_transform(waveform_with_channel)
 
-        # Convert to dB scale with proper reference
-        mel_spec_db = torchaudio.transforms.AmplitudeToDB(
-            stype='power',
-            top_db=80.0
-        )(mel_spec)
+        # # Convert to dB scale with proper reference
+        # mel_spec_db = torchaudio.transforms.AmplitudeToDB(
+        #     stype='power',
+        #     top_db=80.0
+        # )(mel_spec)
 
-        # Normalize to [-1, 1] range for better neural network training
-        mel_spec_db = (mel_spec_db - mel_spec_db.mean()) / (mel_spec_db.std() + 1e-8)
-        mel_spec_db = torch.clamp(mel_spec_db, -3, 3)
-        mel_spec_db = mel_spec_db / 3.0
+        # # Normalize to [-1, 1] range for better neural network training
+        # mel_spec_db = (mel_spec_db - mel_spec_db.mean()) / (mel_spec_db.std() + 1e-8)
+        # mel_spec_db = torch.clamp(mel_spec_db, -3, 3)
+        # mel_spec_db = mel_spec_db / 3.0
 
-        # Convert to 3-channel format for ResNet
-        mel_spec_3ch = mel_spec_db.repeat(3, 1, 1)
+        # # Convert to 3-channel format for ResNet
+        # mel_spec_3ch = mel_spec_db.repeat(3, 1, 1)
 
-        return waveform, mel_spec_3ch
+        # return waveform, mel_spec_3ch
 
     def _extract_audio(self, video_path):
         """
@@ -646,125 +646,6 @@ class VideoDeceptionDataset(Dataset):
         except:
             pass
     
-    # def _sample_frames_ffmpeg(self, video_path):
-    #     """
-    #     Fallback method: Use FFmpeg directly to extract frames
-    #     This handles MKV and other problematic formats that OpenCV can't read
-    #     """
-    #     try:
-    #         # First, get video duration and fps using ffprobe
-    #         probe_cmd = [
-    #             'ffprobe',
-    #             '-v', 'error',
-    #             '-select_streams', 'v:0',
-    #             '-show_entries', 'stream=duration,nb_frames,r_frame_rate',
-    #             '-of', 'default=noprint_wrappers=1',
-    #             video_path
-    #         ]
-
-    #         probe_result = subprocess.run(
-    #             probe_cmd,
-    #             capture_output=True,
-    #             text=True,
-    #             timeout=10
-    #         )
-
-    #         # Parse output
-    #         duration = None
-    #         nb_frames = None
-    #         fps = None
-
-    #         for line in probe_result.stdout.split('\n'):
-    #             if 'duration=' in line:
-    #                 try:
-    #                     duration = float(line.split('=')[1])
-    #                 except:
-    #                     pass
-    #             elif 'nb_frames=' in line:
-    #                 try:
-    #                     nb_frames = int(line.split('=')[1])
-    #                 except:
-    #                     pass
-    #             elif 'r_frame_rate=' in line:
-    #                 try:
-    #                     rate_parts = line.split('=')[1].split('/')
-    #                     fps = float(rate_parts[0]) / float(rate_parts[1])
-    #                 except:
-    #                     pass
-
-    #         # Estimate total frames
-    #         if nb_frames:
-    #             total_frames = nb_frames
-    #         elif duration and fps:
-    #             total_frames = int(duration * fps)
-    #         else:
-    #             total_frames = self.num_frames  # Fallback
-
-    #         # Calculate frame indices to extract
-    #         if total_frames < self.num_frames:
-    #             frame_indices = list(range(total_frames))
-    #             # Duplicate last frame if needed
-    #             while len(frame_indices) < self.num_frames:
-    #                 frame_indices.append(frame_indices[-1] if frame_indices else 0)
-    #         else:
-    #             frame_indices = np.linspace(0, total_frames - 1, self.num_frames, dtype=int).tolist()
-
-    #         frames = []
-
-    #         # Extract frames using FFmpeg
-    #         for idx in frame_indices:
-    #             # Seek to specific frame and extract one frame
-    #             cmd = [
-    #                 'ffmpeg',
-    #                 '-ss', str(idx / max(fps, 1)),  # Seek to time position
-    #                 '-i', video_path,
-    #                 '-vframes', '1',  # Extract 1 frame
-    #                 '-f', 'rawvideo',
-    #                 '-pix_fmt', 'rgb24',
-    #                 '-s', f'{self.frame_size[0]}x{self.frame_size[1]}',
-    #                 '-v', 'quiet',
-    #                 '-'
-    #             ]
-
-    #             result = subprocess.run(
-    #                 cmd,
-    #                 capture_output=True,
-    #                 timeout=5
-    #             )
-
-    #             if result.returncode == 0 and len(result.stdout) > 0:
-    #                 # Parse raw RGB data
-    #                 expected_size = self.frame_size[0] * self.frame_size[1] * 3
-    #                 if len(result.stdout) >= expected_size:
-    #                     frame_data = np.frombuffer(result.stdout[:expected_size], dtype=np.uint8)
-    #                     frame = frame_data.reshape((self.frame_size[1], self.frame_size[0], 3))
-    #                     frames.append(frame)
-    #                 else:
-    #                     if frames:
-    #                         frames.append(frames[-1].copy())
-    #                     else:
-    #                         frames.append(np.zeros((self.frame_size[1], self.frame_size[0], 3), dtype=np.uint8))
-    #             else:
-    #                 if frames:
-    #                     frames.append(frames[-1].copy())
-    #                 else:
-    #                     frames.append(np.zeros((self.frame_size[1], self.frame_size[0], 3), dtype=np.uint8))
-
-    #         # Ensure correct number of frames
-    #         while len(frames) < self.num_frames:
-    #             if frames:
-    #                 frames.append(frames[-1].copy())
-    #             else:
-    #                 frames.append(np.zeros((self.frame_size[1], self.frame_size[0], 3), dtype=np.uint8))
-
-    #         frames = np.stack(frames[:self.num_frames], axis=0)
-    #         return frames
-
-    #     except Exception as e:
-    #         if self.mode == 'train' and random.random() < 0.1:
-    #             print(f"FFmpeg fallback also failed for {os.path.basename(video_path)}: {str(e)[:50]}")
-    #         # Return black frames as last resort
-    #         return np.zeros((self.num_frames, self.frame_size[1], self.frame_size[0], 3), dtype=np.uint8)
     def _sample_frames_ffmpeg(self, video_path):
         """
         Sample frames using FFmpeg (works with ALL video formats: mp4, mkv, wmv, avi, etc.)
@@ -1560,6 +1441,29 @@ class VideoDeceptionDataset(Dataset):
             # Return a safe dummy sample
             return self._get_dummy_sample(label, video_path)
 
+class FocalLoss(nn.Module):
+    """
+    Focal Loss for handling class imbalance
+    Better than weighted CE for imbalanced datasets
+    """
+    def __init__(self, alpha=None, gamma=2.0, reduction='mean'):
+        super(FocalLoss, self).__init__()
+        self.alpha = alpha  # Class weights [weight_class0, weight_class1]
+        self.gamma = gamma  # Focusing parameter (default: 2)
+        self.reduction = reduction
+    
+    def forward(self, inputs, targets):
+        ce_loss = F.cross_entropy(inputs, targets, reduction='none', weight=self.alpha)
+        pt = torch.exp(-ce_loss)  # Probability of correct class
+        focal_loss = ((1 - pt) ** self.gamma) * ce_loss
+        
+        if self.reduction == 'mean':
+            return focal_loss.mean()
+        elif self.reduction == 'sum':
+            return focal_loss.sum()
+        else:
+            return focal_loss
+
 def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch, args):
     """Train for one epoch"""
     model.train()
@@ -1571,6 +1475,8 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch, args
 
     correct = 0
     total = 0
+
+    print(f"Batch {i+1} loaded", flush=True) 
 
     for i, sample_batched in enumerate(dataloader):
         # Get data
@@ -1698,16 +1604,40 @@ def load_checkpoint(model, optimizer, scheduler_warmup, scheduler_cosine, device
         return ckpt['epoch'] + 1, ckpt['current_step'], ckpt['best_val_acc']
     return 0, 0, 0.0
 
-# def install_ffmpeg():
-#     print("Installing ffmpeg...")
-#     subprocess.run(["sudo apt-get", "update"], check=True)
-#     subprocess.run(["sudo apt-get", "install", "-y", "ffmpeg"], check=True)  # ❌ Remove
+def compute_class_weights(dataset):
+    """
+    Compute class weights for imbalanced dataset
+    Returns: tensor of weights for each class
+    """
+    labels = [dataset[i]['label'].item() for i in range(len(dataset))]
+    class_counts = np.bincount(labels)
     
+    total = sum(class_counts)
+    num_classes = len(class_counts)
+    
+    print(f"\n{'='*60}")
+    print(f"📊 Dataset Statistics:")
+    print(f"{'='*60}")
+    print(f"  Class 0 (Truth): {class_counts[0]} samples ({100*class_counts[0]/total:.1f}%)")
+    print(f"  Class 1 (Lie):   {class_counts[1]} samples ({100*class_counts[1]/total:.1f}%)")
+    print(f"  Imbalance ratio: {max(class_counts)/min(class_counts):.2f}:1")
+    
+    # Compute inverse frequency weights
+    weights = total / (num_classes * class_counts)
+    
+    # Normalize weights so they sum to num_classes
+    weights = weights / weights.sum() * num_classes
+    
+    print(f"  Class weights: [Truth: {weights[0]:.3f}, Lie: {weights[1]:.3f}]")
+    print(f"{'='*60}\n")
+    
+    return torch.FloatTensor(weights)
+
 def main(args):
 
     # install_ffmpeg()
 
-    # === PASTE AT START OF main(args) ===
+    # === START OF main(args) ===
     print(f"DEBUG: Checking path {args.train_root}")
     if os.path.exists(args.train_root):
         contents = os.listdir(args.train_root)
@@ -1780,6 +1710,10 @@ def main(args):
             mode='val'
         )
 
+    class_weights = compute_class_weights(train_dataset)
+    print(class_weights)
+    # train_sampler = create_balanced_sampler(train_dataset)
+   
     # Create dataloaders
     train_loader = DataLoader(
         train_dataset,
@@ -1808,8 +1742,14 @@ def main(args):
     print(f"Model created with {sum(p.numel() for p in model.parameters())} parameters")
     log_file.write(f"Model parameters: {sum(p.numel() for p in model.parameters())}\n")
 
+    ### Focal loss
+    criterion = FocalLoss(
+        alpha=class_weights.to(device),
+        gamma=2.0  # Focusing parameter
+    )
+
     # Loss and optimizer
-    criterion = nn.CrossEntropyLoss()
+    # criterion = nn.CrossEntropyLoss()
     optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
 
     # Learning rate scheduler
@@ -1912,6 +1852,8 @@ def main(args):
 
 if __name__ == "__main__":
 
+    install_system_dependencies()
+
     try:
         # Force print immediately to prove code started
         print("🚀 SCRIPT STARTED SUCCESSFULLY", flush=True)
@@ -1926,7 +1868,7 @@ if __name__ == "__main__":
         parser.add_argument('--log', type=str, default='logs', help='Log directory')
         parser.add_argument('--echo_batches', type=int, default=10, help='Print frequency')
         parser.add_argument('--val_interval', type=int, default=1, help='Validation interval')
-        parser.add_argument('--num_workers', type=int, default=0, help='Dataloader workers')
+        parser.add_argument('--num_workers', type=int, default=4, help='Dataloader workers')
 
         # Dataset parameters
         parser.add_argument('--train_root', type=str, default=None,
