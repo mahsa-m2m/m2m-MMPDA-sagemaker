@@ -28,10 +28,10 @@ from sklearn.metrics import (
 
 
 # SageMaker paths (with fallbacks for local testing)
-CHECKPOINT_DIR = os.environ.get('SM_CHECKPOINT_DIR', '/opt/ml/checkpoints')
-# CHECKPOINT_DIR = '/home/sagemaker-user/mahsa-m2m-MMPDA-sagemaker/logs'
-MODEL_DIR = os.environ.get('SM_MODEL_DIR', '/opt/ml/model')
-# MODEL_DIR = '/home/sagemaker-user/mahsa-m2m-MMPDA-sagemaker/logs'
+# CHECKPOINT_DIR = os.environ.get('SM_CHECKPOINT_DIR', '/opt/ml/checkpoints')
+CHECKPOINT_DIR = '/home/sagemaker-user/mahsa-m2m-MMPDA-sagemaker/logs'
+# MODEL_DIR = os.environ.get('SM_MODEL_DIR', '/opt/ml/model')
+MODEL_DIR = '/home/sagemaker-user/mahsa-m2m-MMPDA-sagemaker/logs'
 
 # ==================== COMPREHENSIVE WARNING SUPPRESSION ====================
 
@@ -279,113 +279,6 @@ class VideoDeceptionDataset(Dataset):
             'label': torch.tensor(label, dtype=torch.long),
             'videoname': os.path.basename(video_path) + '_DUMMY'
         }
-    
-    # def _extract_audio(self, video_path):
-        # """
-        # Extract audio from video and create mel spectrogram
-        # FIX: Use scipy resampler (no resampy dependency) and torchaudio as fallback
-        # """
-        # try:
-        #     # Method 1: Try librosa with scipy backend (no resampy needed)
-        #     y, sr = librosa.load(
-        #         video_path,
-        #         sr=self.sample_rate,
-        #         mono=True,
-        #         res_type='soxr_hq'  # High-quality scipy resampler
-        #     )
-
-        #     # Convert to torch tensor
-        #     waveform = torch.from_numpy(y).float()
-
-        # except Exception as e1:
-        #     try:
-        #         # Method 2: Fallback to torchaudio (works with more formats)
-        #         waveform, sr = torchaudio.load(video_path)
-
-        #         # Convert to mono if stereo
-        #         if waveform.shape[0] > 1:
-        #             waveform = torch.mean(waveform, dim=0)
-        #         else:
-        #             waveform = waveform.squeeze(0)
-
-        #         # Resample if needed using torchaudio
-        #         if sr != self.sample_rate:
-        #             resampler = torchaudio.transforms.Resample(sr, self.sample_rate)
-        #             waveform = resampler(waveform.unsqueeze(0)).squeeze(0)
-
-        #     except Exception as e2:
-        #         # Method 3: Extract audio using FFmpeg first
-        #         try:
-        #             with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp:
-        #                 tmp_path = tmp.name
-
-        #             cmd = [
-        #                 'ffmpeg', '-i', video_path,
-        #                 '-vn', '-acodec', 'pcm_s16le',
-        #                 '-ar', str(self.sample_rate),
-        #                 '-ac', '1', '-y',
-        #                 '-loglevel', 'quiet',
-        #                 tmp_path
-        #             ]
-        #             subprocess.run(cmd, check=True, timeout=30,
-        #                            stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
-
-        #             # Load extracted audio
-        #             y, sr = librosa.load(tmp_path, sr=self.sample_rate, mono=True)
-        #             waveform = torch.from_numpy(y).float()
-
-        #             os.remove(tmp_path)
-
-        #         except Exception as e3:
-        #             # All methods failed - use silent audio
-        #             if random.random() < 0.05:  # Print 5% of errors
-        #                 print(f"Note: All audio extraction methods failed for {os.path.basename(video_path)}")
-        #             waveform = torch.zeros(self.audio_length)
-
-        # # Pad or truncate to desired length
-        # if waveform.shape[0] < self.audio_length:
-        #     padding = self.audio_length - waveform.shape[0]
-        #     waveform = F.pad(waveform.unsqueeze(0), (0, padding)).squeeze(0)
-        # else:
-        #     waveform = waveform[:self.audio_length]
-
-        # # Add channel dimension for mel transform
-        # waveform_with_channel = waveform.unsqueeze(0)
-
-        # # Create mel spectrogram with optimized parameters
-        # n_fft = 2048
-        # hop_length = 512
-
-        # mel_transform = torchaudio.transforms.MelSpectrogram(
-        #     sample_rate=self.sample_rate,
-        #     n_fft=n_fft,
-        #     win_length=n_fft,
-        #     hop_length=hop_length,
-        #     n_mels=self.n_mels,
-        #     f_min=20.0,
-        #     f_max=min(8000.0, self.sample_rate // 2),
-        #     power=2.0,
-        #     norm='slaney',
-        #     mel_scale='htk'
-        # )
-
-        # mel_spec = mel_transform(waveform_with_channel)
-
-        # # Convert to dB scale with proper reference
-        # mel_spec_db = torchaudio.transforms.AmplitudeToDB(
-        #     stype='power',
-        #     top_db=80.0
-        # )(mel_spec)
-
-        # # Normalize to [-1, 1] range for better neural network training
-        # mel_spec_db = (mel_spec_db - mel_spec_db.mean()) / (mel_spec_db.std() + 1e-8)
-        # mel_spec_db = torch.clamp(mel_spec_db, -3, 3)
-        # mel_spec_db = mel_spec_db / 3.0
-
-        # # Convert to 3-channel format for ResNet
-        # mel_spec_3ch = mel_spec_db.repeat(3, 1, 1)
-
-        # return waveform, mel_spec_3ch
 
     def _extract_audio(self, video_path):
         """
@@ -453,86 +346,6 @@ class VideoDeceptionDataset(Dataset):
             # Return silent audio
             return (np.zeros(self.audio_length, dtype=np.float32),
                     np.zeros((3, self.n_mels, self.audio_length // 160 + 1), dtype=np.float32))
-
-    # def _sample_frames(self, video_path):
-    #     """
-    #     Sample frames uniformly from video with proper error handling
-    #     FIX: Use FFmpeg fallback for videos that OpenCV can't read (especially MKV files)
-    #     """
-    #     # First attempt: OpenCV direct reading
-    #     cap = cv2.VideoCapture(video_path)
-
-    #     if not cap.isOpened():
-    #         # Fallback: Use FFmpeg to pipe frames directly
-    #         # return self._sample_frames_ffmpeg(video_path)
-    #         return None
-
-    #     # Set backend to FFmpeg for better H.264 handling
-    #     cap.set(cv2.CAP_PROP_BUFFERSIZE, 3)
-
-    #     try:
-    #         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    #         fps = cap.get(cv2.CAP_PROP_FPS)
-
-    #         # # FIX: If frame count is unreliable (common with H.264), estimate from duration
-    #         # if total_frames <= 0 or fps <= 0:
-    #         #     cap.release()
-    #         #     return self._sample_frames_ffmpeg(video_path)
-
-    #         # Handle videos with invalid metadata
-    #         if total_frames <= 0 or fps <= 0:
-    #             print(f"⚠️ Invalid video metadata for {os.path.basename(video_path)}, counting frames manually")
-    #             total_frames = self._count_frames_manually(cap)
-    #             cap.release()
-    #             cap = cv2.VideoCapture(video_path)  # Reopen
-            
-    #         if total_frames < self.num_frames:
-    #             print(f"⚠️ Video {os.path.basename(video_path)} has only {total_frames} frames, needed {self.num_frames}")
-    #             # Sample with repetition
-    #             indices = np.linspace(0, max(0, total_frames - 1), self.num_frames).astype(int)
-    #         else:
-    #             # Uniform sampling
-    #             indices = np.linspace(0, total_frames - 1, self.num_frames).astype(int)
-        
-    #         frames = []
-    #         last_valid_frame = None
-    #         # failed_reads = 0
-    #         # max_failures = self.num_frames // 4  # Allow up to 25% read failures
-
-    #         for idx in indices:
-    #             cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-    #             ret, frame = cap.read()
-                
-    #             if ret and frame is not None:
-    #                 # Resize to target size
-    #                 frame = cv2.resize(frame, (self.frame_size[1], self.frame_size[0]))
-    #                 # Convert BGR to RGB
-    #                 frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    #                 frames.append(frame)
-    #                 last_valid_frame = frame.copy()
-    #             else:
-    #                 # Use last valid frame or create black frame
-    #                 if last_valid_frame is not None:
-    #                     frames.append(last_valid_frame.copy())
-    #                 else:
-    #                     black_frame = np.zeros((self.frame_size[0], self.frame_size[1], 3), dtype=np.uint8)
-    #                     frames.append(black_frame)
-    #         cap.release()
-
-    #         if len(frames) != self.num_frames:
-    #             print(f"⚠️ Expected {self.num_frames} frames, got {len(frames)}")
-    #             # Pad or truncate
-    #             while len(frames) < self.num_frames:
-    #                 frames.append(frames[-1].copy() if frames else 
-    #                             np.zeros((self.frame_size[0], self.frame_size[1], 3), dtype=np.uint8))
-    #             frames = frames[:self.num_frames]
-            
-    #         return np.array(frames, dtype=np.uint8)
-        
-    #     except Exception as e:
-    #         print(f"❌ Error sampling frames from {os.path.basename(video_path)}: {str(e)}")
-    #         cap.release()
-    #         return None
 
     def _sample_frames(self, video_path):
         """
@@ -779,74 +592,6 @@ class VideoDeceptionDataset(Dataset):
             traceback.print_exc()
             return None
 
-    # def _extract_behavioral_features(self, frames):
-    #     """
-    #     Extract behavioral features from MediaPipe face landmarks
-
-    #     This extracts 64 features per frame including:
-    #     - Head pose estimation (3 rotation angles: pitch, yaw, roll)
-    #     - Eye aspect ratios (2 features: left, right eye openness)
-    #     - Mouth aspect ratio (1 feature: mouth openness)
-    #     - Eyebrow positions (2 features: left, right eyebrow height)
-    #     - Facial symmetry (1 feature)
-    #     - Key landmark distances (55 features: distances between important points)
-
-    #     Total: 64 features per frame
-    #     Expected output: (T, 64) where T=num_frames
-    #     """
-    #     # Initialize MediaPipe in the worker process
-    #     self._init_mediapipe()
-
-    #     all_features = []
-    #     faces_detected = 0
-
-    #     for frame_idx in range(len(frames)):
-    #         frame = frames[frame_idx]
-
-    #         # MediaPipe expects RGB images (frames are already in RGB from _sample_frames)
-    #         # Ensure correct format and dimensions
-    #         if frame.shape[0] != self.frame_size[0] or frame.shape[1] != self.frame_size[1]:
-    #             frame = cv2.resize(frame, self.frame_size)
-
-    #         # Ensure uint8 format for MediaPipe
-    #         if frame.dtype != np.uint8:
-    #             frame = frame.astype(np.uint8)
-
-    #         ######## DEBUG: Check frame quality
-    #         if frame_idx == 0 and random.random() < 0.01:  # 1% of videos
-    #             print(f"  Frame quality: min={frame.min()}, max={frame.max()}, mean={frame.mean():.1f}")
-    #             print(f"  Frame is all black: {frame.max() == 0}")
-        
-    #         # Process with MediaPipe
-    #         # FIX: Provide image dimensions to resolve NORM_RECT warning
-    #         results = self.face_mesh.process(frame)
-
-    #         if results.multi_face_landmarks and len(results.multi_face_landmarks) > 0:
-    #             landmarks = results.multi_face_landmarks[0].landmark
-    #             features = self._compute_features_from_landmarks(landmarks, frame.shape)
-    #             faces_detected += 1
-    #         else:
-    #             # No face detected, use zero features
-    #             features = np.zeros(64, dtype=np.float32)
-    #             # features = np.random.randn(64).astype(np.float32) * 0.1
-
-    #                 # 🔍 VALIDATE: Ensure exactly 64 features
-    #         if features.shape != (64,):
-    #             print(f"⚠️ WARNING: Feature shape is {features.shape}, padding/truncating to (64,)")
-    #             if features.shape[0] < 64:
-    #                 # Pad with zeros
-    #                 features = np.pad(features, (0, 64 - features.shape[0]), mode='constant')
-    #             else:
-    #                 # Truncate
-    #                 features = features[:64]
-            
-    #         all_features.append(features)
-        
-    #     ###### DEBUG: Report detection rate
-    #     if random.random() < 0.05:  # 5% of videos
-    #         print(f"  Face detection: {faces_detected}/{len(frames)} frames")
-
-    #     return np.stack(all_features, axis=0)
     def _extract_behavioral_features(self, frames):
         """
         Extract 50 behavioral features per frame:
@@ -1414,7 +1159,7 @@ class VideoDeceptionDataset(Dataset):
             frames = (frames / 255.0 - 0.5) * 2.0
 
             # 🔍 DEBUG: Print shapes
-            if idx == 0:  # Print for first sample
+            if idx % 50 == 0:  # Print for first sample
                 print(f"\n🔍 Info for video: {os.path.basename(video_path)}")
                 print(f"  Frames shape: {frames.shape}")
                 print(f"  Behavioral features shape: {behavioral_features.shape}")
@@ -1423,7 +1168,6 @@ class VideoDeceptionDataset(Dataset):
             
             # Convert behavioral features to tensor
             behavioral_features = torch.from_numpy(behavioral_features).float()
-
             
             sample = {
                 'vision_behaviour': behavioral_features,  # (T=64, 64)
@@ -1476,9 +1220,9 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch, args
     correct = 0
     total = 0
 
-    print(f"Batch {i+1} loaded", flush=True) 
 
     for i, sample_batched in enumerate(dataloader):
+        print(f"Batch {i+1} loaded", flush=True) 
         # Get data
         vision_behaviour = sample_batched['vision_behaviour'].to(device)  # (B, T, 64)
         vision_face = sample_batched['vision_face'].to(device)  # (B, C, T, H, W)
@@ -1604,34 +1348,71 @@ def load_checkpoint(model, optimizer, scheduler_warmup, scheduler_cosine, device
         return ckpt['epoch'] + 1, ckpt['current_step'], ckpt['best_val_acc']
     return 0, 0, 0.0
 
+# def compute_class_weights(dataset):
+#     """
+#     Compute class weights for imbalanced dataset
+#     Returns: tensor of weights for each class
+#     """
+#     labels = [dataset[i]['label'].item() for i in range(len(dataset))]
+#     class_counts = np.bincount(labels)
+    
+#     total = sum(class_counts)
+#     num_classes = len(class_counts)
+    
+#     print(f"\n{'='*60}")
+#     print(f"📊 Dataset Statistics:")
+#     print(f"{'='*60}")
+#     print(f"  Class 0 (Truth): {class_counts[0]} samples ({100*class_counts[0]/total:.1f}%)")
+#     print(f"  Class 1 (Lie):   {class_counts[1]} samples ({100*class_counts[1]/total:.1f}%)")
+#     print(f"  Imbalance ratio: {max(class_counts)/min(class_counts):.2f}:1")
+    
+#     # Compute inverse frequency weights
+#     weights = total / (num_classes * class_counts)
+    
+#     # Normalize weights so they sum to num_classes
+#     weights = weights / weights.sum() * num_classes
+    
+#     print(f"  Class weights: [Truth: {weights[0]:.3f}, Lie: {weights[1]:.3f}]")
+#     print(f"{'='*60}\n")
+    
+#     return torch.FloatTensor(weights)
+
 def compute_class_weights(dataset):
     """
-    Compute class weights for imbalanced dataset
-    Returns: tensor of weights for each class
+    Fast version - directly access labels without loading full samples
+    Only use if your dataset has a direct label access method
     """
-    labels = [dataset[i]['label'].item() for i in range(len(dataset))]
-    class_counts = np.bincount(labels)
+    print(f"\n{'='*60}")
+    print(f"📊 Computing Class Weights (Fast Mode)...")
+    print(f"{'='*60}")
     
+    # Check if dataset has direct label access
+    if hasattr(dataset, 'labels'):
+        labels = dataset.labels
+        print(f"  ✅ Using pre-loaded labels from dataset")
+    else:
+        print(f"  ⚠️ No direct label access, falling back to full loading")
+        return compute_class_weights(dataset)
+    
+    class_counts = np.bincount(labels)
     total = sum(class_counts)
     num_classes = len(class_counts)
     
-    print(f"\n{'='*60}")
-    print(f"📊 Dataset Statistics:")
-    print(f"{'='*60}")
+    print(f"\n📊 Dataset Statistics:")
+    print(f"  Total samples: {total}")
     print(f"  Class 0 (Truth): {class_counts[0]} samples ({100*class_counts[0]/total:.1f}%)")
     print(f"  Class 1 (Lie):   {class_counts[1]} samples ({100*class_counts[1]/total:.1f}%)")
     print(f"  Imbalance ratio: {max(class_counts)/min(class_counts):.2f}:1")
     
     # Compute inverse frequency weights
     weights = total / (num_classes * class_counts)
-    
-    # Normalize weights so they sum to num_classes
     weights = weights / weights.sum() * num_classes
     
     print(f"  Class weights: [Truth: {weights[0]:.3f}, Lie: {weights[1]:.3f}]")
     print(f"{'='*60}\n")
     
     return torch.FloatTensor(weights)
+
 
 def main(args):
 
@@ -1710,6 +1491,7 @@ def main(args):
             mode='val'
         )
 
+    print("============= Class Weight ==========")
     class_weights = compute_class_weights(train_dataset)
     print(class_weights)
     # train_sampler = create_balanced_sampler(train_dataset)
@@ -1866,7 +1648,7 @@ if __name__ == "__main__":
         parser.add_argument('--batchsize', type=int, default=8, help='Batch size')
         parser.add_argument('--max_epochs', type=int, default=30, help='Maximum epochs')
         parser.add_argument('--log', type=str, default='logs', help='Log directory')
-        parser.add_argument('--echo_batches', type=int, default=10, help='Print frequency')
+        parser.add_argument('--echo_batches', type=int, default=5, help='Print frequency')
         parser.add_argument('--val_interval', type=int, default=1, help='Validation interval')
         parser.add_argument('--num_workers', type=int, default=4, help='Dataloader workers')
 
@@ -1924,11 +1706,11 @@ if __name__ == "__main__":
         args = parser.parse_args()
 
     # 🔍 DEBUG: Check if source_dir uploaded correctly
-        print(f"📂 Current Directory contents: {os.listdir('.')}", flush=True)
-        if os.path.exists('models_comp'):
-            print(f"📂 models_comp contents: {os.listdir('models_comp')}", flush=True)
-        else:
-            print("❌ ERROR: 'models_comp' folder NOT FOUND in container!", flush=True)
+        # print(f"📂 Current Directory contents: {os.listdir('.')}", flush=True)
+        # if os.path.exists('models_comp'):
+        #     print(f"📂 models_comp contents: {os.listdir('models_comp')}", flush=True)
+        # else:
+        #     print("❌ ERROR: 'models_comp' folder NOT FOUND in container!", flush=True)
 
         main(args)
         

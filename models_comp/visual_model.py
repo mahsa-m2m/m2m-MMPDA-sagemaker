@@ -49,6 +49,7 @@ class ResNet18_face_LSTM(nn.Module):
 
         return logits, out[:, -1, :].unsqueeze(1) #.mean(dim=1).unsqueeze(1)
 
+##### This one:
 class AU_GAZE_Affect7_LSTM_MLP(nn.Module):
 
     def __init__(self, bidirectional=True):
