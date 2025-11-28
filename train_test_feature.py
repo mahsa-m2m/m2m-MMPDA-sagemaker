@@ -26,12 +26,11 @@ from sklearn.metrics import (
 )
 
 
-
 # SageMaker paths (with fallbacks for local testing)
-# CHECKPOINT_DIR = os.environ.get('SM_CHECKPOINT_DIR', '/opt/ml/checkpoints')
-CHECKPOINT_DIR = '/home/sagemaker-user/mahsa-m2m-MMPDA-sagemaker/logs'
-# MODEL_DIR = os.environ.get('SM_MODEL_DIR', '/opt/ml/model')
-MODEL_DIR = '/home/sagemaker-user/mahsa-m2m-MMPDA-sagemaker/logs'
+CHECKPOINT_DIR = os.environ.get('SM_CHECKPOINT_DIR', './checkpoints')
+# CHECKPOINT_DIR = '/home/sagemaker-user/mahsa-m2m-MMPDA-sagemaker/logs'
+MODEL_DIR = os.environ.get('SM_MODEL_DIR', './model')
+# MODEL_DIR = '/home/sagemaker-user/mahsa-m2m-MMPDA-sagemaker/logs'
 
 # ==================== COMPREHENSIVE WARNING SUPPRESSION ====================
 
@@ -41,43 +40,6 @@ warnings.filterwarnings('ignore', category=UserWarning)
 warnings.filterwarnings('ignore', category=FutureWarning)
 warnings.filterwarnings('ignore', category=DeprecationWarning)
 
-# # 2. Suppress TensorFlow/MediaPipe logs (must be set BEFORE importing mediapipe)
-# os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # 0=all, 1=info, 2=warning, 3=error only
-# os.environ['GLOG_minloglevel'] = '3'  # Google logging
-# os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
-
-# # 3. Suppress OpenCV/FFmpeg warnings
-# os.environ['OPENCV_LOG_LEVEL'] = 'ERROR'
-# os.environ['OPENCV_VIDEOIO_DEBUG'] = '0'
-# os.environ['OPENCV_VIDEOIO_PRIORITY_FFMPEG'] = '0'
-# cv2.setLogLevel(0)  # 0 = silent
-
-
-# 4. Redirect stderr temporarily for library initialization
-# class SuppressOutput:
-#     def __enter__(self):
-#         self.null_fds = [os.open(os.devnull, os.O_RDWR) for _ in range(2)]
-#         self.save_fds = [os.dup(1), os.dup(2)]
-#         os.dup2(self.null_fds[0], 1)
-#         os.dup2(self.null_fds[1], 2)
-#         return self
-
-#     def __exit__(self, *_):
-#         os.dup2(self.save_fds[0], 1)
-#         os.dup2(self.save_fds[1], 2)
-#         for fd in self.null_fds + self.save_fds:
-#             os.close(fd)
-
-
-# # Import with suppression
-# with SuppressOutput():
-#     # 5. Suppress ABSL logging (MediaPipe uses this)
-#     import absl.logging
-
-#     absl.logging.set_verbosity(absl.logging.ERROR)
-#     absl.logging.set_stderrthreshold(absl.logging.ERROR)
-
-#     import mediapipe as mp
 
 # Now import librosa with proper backend (without resampy dependency)
 # FIX: Use scipy resampler instead of resampy
@@ -87,7 +49,8 @@ import librosa
 # ============================================================================
 
 # Import your models
-from models_comp.fusion_model import FusionModule
+# from models_comp.fusion_model import FusionModule
+from models_comp.fusion_model import LightweightFusionModule
 from utils import AvgrageMeter, performances
 import DALoss
 import DANetwork
@@ -1348,35 +1311,6 @@ def load_checkpoint(model, optimizer, scheduler_warmup, scheduler_cosine, device
         return ckpt['epoch'] + 1, ckpt['current_step'], ckpt['best_val_acc']
     return 0, 0, 0.0
 
-# def compute_class_weights(dataset):
-#     """
-#     Compute class weights for imbalanced dataset
-#     Returns: tensor of weights for each class
-#     """
-#     labels = [dataset[i]['label'].item() for i in range(len(dataset))]
-#     class_counts = np.bincount(labels)
-    
-#     total = sum(class_counts)
-#     num_classes = len(class_counts)
-    
-#     print(f"\n{'='*60}")
-#     print(f"📊 Dataset Statistics:")
-#     print(f"{'='*60}")
-#     print(f"  Class 0 (Truth): {class_counts[0]} samples ({100*class_counts[0]/total:.1f}%)")
-#     print(f"  Class 1 (Lie):   {class_counts[1]} samples ({100*class_counts[1]/total:.1f}%)")
-#     print(f"  Imbalance ratio: {max(class_counts)/min(class_counts):.2f}:1")
-    
-#     # Compute inverse frequency weights
-#     weights = total / (num_classes * class_counts)
-    
-#     # Normalize weights so they sum to num_classes
-#     weights = weights / weights.sum() * num_classes
-    
-#     print(f"  Class weights: [Truth: {weights[0]:.3f}, Lie: {weights[1]:.3f}]")
-#     print(f"{'='*60}\n")
-    
-#     return torch.FloatTensor(weights)
-
 def compute_class_weights(dataset):
     """
     Fast version - directly access labels without loading full samples
@@ -1518,7 +1452,8 @@ def main(args):
     args.device = device
 
     # Create model
-    model = FusionModule(args)
+    model = LightweightFusionModule(args)
+    # model = FusionModule(args)
     model = model.to(device)
 
     print(f"Model created with {sum(p.numel() for p in model.parameters())} parameters")

@@ -24,8 +24,8 @@ estimator = PyTorch(
     output_path=f's3://{BUCKET_NAME}/output/',
     
     environment={
-        'PYTHONUNBUFFERED': '1',        # Forces prints to show up immediately
-        'SM_CHECKPOINT_DIR': '/opt/ml/checkpoints' 
+        'PYTHONUNBUFFERED': '1'        # Forces prints to show up immediately
+        # 'SM_CHECKPOINT_DIR': '/opt/ml/checkpoints' 
     },
     # These become CLI args: --train_root, --val_root, etc.
     hyperparameters={

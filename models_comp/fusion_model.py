@@ -293,6 +293,137 @@ class FusionModule(nn.Module):
             return fused_logits, None, None, None, None, [vision_behaviours, face_feat, audio_mels,last_hs]
 
 
+class LightweightFusionModule(nn.Module):
+    """
+    Simplified fusion for small datasets
+    Reduces params from 36M to ~5-10M
+    """
+    def __init__(self, args):
+        super(LightweightFusionModule, self).__init__()
+        self.multi = True
+        self.modalities = args.modalities
+        
+        # CHANGE 1: Freeze pretrained encoders (if using pretrained weights)
+        # CHANGE 2: Use simpler behavioral model
+        self.vision_model = AU_GAZE_Affect7_LSTM_MLP(bidirectional=False)
+        
+        # # OPTIONAL: Freeze vision model if not performing well
+        # for param in self.vision_model.parameters():
+        #     param.requires_grad = False
+        
+        # Keep audio and face models
+        self.audio_model = ResNet18_audio()
+        self.face_model = ResNet18_LSTM()
+        
+        # CHANGE 3: Simpler projections (no Conv1d, just Linear)
+        self.audio_proj = nn.Linear(args.a_dim, args.common_dim)
+        self.vision_proj = nn.Linear(args.v_dim, args.common_dim)
+        self.face_proj = nn.Linear(args.f_dim, args.common_dim)
+        
+        # CHANGE 4: Replace complex transformers with simple attention
+        self.combined_dim = len(self.modalities) * args.common_dim
+        
+        # Simple attention pooling instead of 6 transformers
+        self.attention = nn.MultiheadAttention(
+            embed_dim=args.common_dim,
+            num_heads=4,  # Reduced from potentially 8
+            dropout=0.3,
+            batch_first=True
+        )
+        
+        # CHANGE 5: Simpler classifier with dropout
+        self.classifier = nn.Sequential(
+            nn.Dropout(0.5),  # High dropout for regularization
+            nn.Linear(self.combined_dim, self.combined_dim // 4),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.3),
+            nn.Linear(self.combined_dim // 4, 2),
+        )
+
+    def forward(self, vision_behaviour, vision_face, audio_mel, audio_wave):
+        print("Forwarding LightFusion.............")
+        # Extract features from each modality
+        al_logits, audio_feats = self.audio_model(audio_mel)  # [B, a_dim, T]
+        vl_logits, vision_feats = self.vision_model(vision_behaviour)  # [B, 1, v_dim]
+        face_logits, face_feats = self.face_model(vision_face)  # [B, f_dim, T]
+        
+        # Global average pooling to get fixed-size representations
+        audio_pooled = audio_feats.mean(dim=2)  # [B, a_dim]
+        vision_pooled = vision_feats.squeeze(1)  # [B, v_dim]
+        face_pooled = face_feats.mean(dim=2)  # [B, f_dim]
+        
+        # Project to common dimension
+        audio_proj = self.audio_proj(audio_pooled)  # [B, common_dim]
+        vision_proj = self.vision_proj(vision_pooled)  # [B, common_dim]
+        face_proj = self.face_proj(face_pooled)  # [B, common_dim]
+        
+        # Stack for attention: [B, 3, common_dim]
+        stacked = torch.stack([audio_proj, vision_proj, face_proj], dim=1)
+        
+        # Simple cross-modal attention (replaces 6 transformers!)
+        attended, _ = self.attention(stacked, stacked, stacked)  # [B, 3, common_dim]
+        
+        # Flatten for classification
+        fused = attended.reshape(attended.size(0), -1)  # [B, 3*common_dim]
+        
+        # Classification
+        fused_logits = self.classifier(fused)
+        
+        if self.multi:
+            return fused_logits, vl_logits, face_logits, al_logits, [vision_feats, face_feats, audio_feats, fused]
+        else:
+            return fused_logits, None, None, None, [vision_feats, face_feats, audio_feats, fused]
+
+
+# ALTERNATIVE: Even simpler concatenation-based fusion (2-5M params)
+class MinimalFusionModule(nn.Module):
+    """Ultra-light fusion - just concatenate and classify"""
+    def __init__(self, args):
+        super(MinimalFusionModule, self).__init__()
+        self.multi = True
+        
+        self.vision_model = AU_GAZE_Affect7_LSTM_MLP(bidirectional=False)
+        self.audio_model = ResNet18_audio()
+        self.face_model = ResNet18_LSTM()
+        
+        # Total input = a_dim + v_dim + f_dim (after pooling)
+        total_dim = args.a_dim + args.v_dim + args.f_dim
+        
+        # Simple MLP classifier
+        self.classifier = nn.Sequential(
+            nn.Dropout(0.5),
+            nn.Linear(total_dim, 256),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(256, 64),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(64, 2)
+        )
+    
+    def forward(self, vision_behaviour, vision_face, audio_mel, audio_wave):
+        # Extract features
+        al_logits, audio_feats = self.audio_model(audio_mel)
+        vl_logits, vision_feats = self.vision_model(vision_behaviour)
+        face_logits, face_feats = self.face_model(vision_face)
+        
+        # Pool to fixed size
+        audio_pooled = audio_feats.mean(dim=2)
+        vision_pooled = vision_feats.squeeze(1)
+        face_pooled = face_feats.mean(dim=2)
+        
+        # Simple concatenation
+        fused = torch.cat([audio_pooled, vision_pooled, face_pooled], dim=1)
+        
+        # Classify
+        fused_logits = self.classifier(fused)
+        
+        if self.multi:
+            return fused_logits, vl_logits, face_logits, al_logits, [vision_feats, face_feats, audio_feats, fused]
+        else:
+            return fused_logits, None, None, None, [vision_feats, face_feats, audio_feats, fused]
+
+
 if __name__ == '__main__':
 
     # for testing :
