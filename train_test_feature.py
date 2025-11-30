@@ -19,6 +19,8 @@ import warnings
 import logging
 import traceback 
 import mediapipe as mp
+from torch.cuda.amp import autocast, GradScaler
+
 
 from sklearn.metrics import (
     accuracy_score, precision_score, recall_score, f1_score,
@@ -32,6 +34,9 @@ CHECKPOINT_DIR = os.environ.get('SM_CHECKPOINT_DIR', './checkpoints')
 MODEL_DIR = os.environ.get('SM_MODEL_DIR', './model')
 # MODEL_DIR = '/home/sagemaker-user/mahsa-m2m-MMPDA-sagemaker/logs'
 
+os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+os.makedirs(MODEL_DIR, exist_ok=True)
+# os.makedirs(OUTPUT_DIR, exist_ok=True)
 # ==================== COMPREHENSIVE WARNING SUPPRESSION ====================
 
 # 1. Suppress Python warnings
@@ -50,7 +55,7 @@ import librosa
 
 # Import your models
 # from models_comp.fusion_model import FusionModule
-from models_comp.fusion_model import LightweightFusionModule
+from models_comp.fusion_model import LightweightFusionModule, MinimalFusionModule
 from utils import AvgrageMeter, performances
 import DALoss
 import DANetwork
@@ -609,148 +614,6 @@ class VideoDeceptionDataset(Dataset):
 
         return np.stack(all_features, axis=0)
 
-    # def _compute_features_from_landmarks(self, landmarks, frame_shape):
-    #     """
-    #     Compute 64 behavioral features from MediaPipe landmarks
-
-    #     MediaPipe provides 478 3D landmarks. We extract meaningful features:
-    #     """
-    #     h, w = frame_shape[:2]
-
-    #     # Convert landmarks to numpy array (normalized coordinates)
-    #     lm_array = np.array([[lm.x, lm.y, lm.z] for lm in landmarks])
-
-    #     features = []
-
-    #     # --- 1. Head Pose Estimation (3 features) ---
-    #     # Using specific facial points for pose estimation
-    #     nose_tip = lm_array[1]  # Nose tip
-    #     chin = lm_array[152]  # Chin
-    #     left_eye = lm_array[33]  # Left eye corner
-    #     right_eye = lm_array[263]  # Right eye corner
-    #     left_mouth = lm_array[61]  # Left mouth corner
-    #     right_mouth = lm_array[291]  # Right mouth corner
-
-    #     # Approximate pitch (up/down tilt)
-    #     pitch = nose_tip[1] - chin[1]
-
-    #     # Approximate yaw (left/right rotation)
-    #     yaw = (right_eye[0] - left_eye[0]) - 0.5  # Normalized difference
-
-    #     # Approximate roll (head tilt)
-    #     roll = np.arctan2(right_eye[1] - left_eye[1], right_eye[0] - left_eye[0])
-
-    #     features.extend([pitch, yaw, roll])
-
-    #     # --- 2. Eye Aspect Ratios (2 features) ---
-    #     # Left eye landmarks: 33, 160, 158, 133, 153, 144
-    #     left_eye_points = lm_array[[33, 160, 158, 133, 153, 144]]
-    #     left_ear = self._eye_aspect_ratio(left_eye_points)
-
-    #     # Right eye landmarks: 263, 387, 385, 362, 380, 373
-    #     right_eye_points = lm_array[[263, 387, 385, 362, 380, 373]]
-    #     right_ear = self._eye_aspect_ratio(right_eye_points)
-
-    #     features.extend([left_ear, right_ear])
-
-    #     # --- 3. Mouth Aspect Ratio (1 feature) ---
-    #     # Mouth landmarks: 61, 291, 0, 17, 84, 314
-    #     mouth_points = lm_array[[61, 291, 0, 17, 84, 314]]
-    #     mar = self._mouth_aspect_ratio(mouth_points)
-    #     features.append(mar)
-
-    #     # --- 4. Eyebrow Heights (2 features) ---
-    #     # Left eyebrow: 70, Right eyebrow: 300
-    #     left_eyebrow = lm_array[70][1]
-    #     right_eyebrow = lm_array[300][1]
-    #     features.extend([left_eyebrow, right_eyebrow])
-
-    #     # --- 5. Facial Symmetry (1 feature) ---
-    #     # Compare left and right sides
-    #     left_side = lm_array[234]  # Left face boundary
-    #     right_side = lm_array[454]  # Right face boundary
-    #     face_center = lm_array[1]  # Nose tip as center
-
-    #     left_dist = np.linalg.norm(left_side - face_center)
-    #     right_dist = np.linalg.norm(right_side - face_center)
-    #     symmetry = abs(left_dist - right_dist)
-    #     features.append(symmetry)
-
-    #     # --- 6. Key Landmark Distances (55 features) ---
-    #     # Distances between important landmark pairs
-    #     important_pairs = [
-    #         (33, 263),  # Eye to eye
-    #         (61, 291),  # Mouth corners
-    #         (1, 152),  # Nose to chin
-    #         (10, 152),  # Forehead to chin
-    #         (33, 61),  # Left eye to left mouth
-    #         (263, 291),  # Right eye to right mouth
-    #         (33, 1),  # Left eye to nose
-    #         (263, 1),  # Right eye to nose
-    #         (61, 1),  # Left mouth to nose
-    #         (291, 1),  # Right mouth to nose
-    #         # Add more pairs for total 55 features
-    #     ]
-
-    #     # Calculate distances for important pairs
-    #     for i, j in important_pairs:
-    #         dist = np.linalg.norm(lm_array[i] - lm_array[j])
-    #         features.append(dist)
-
-    #     # Add more distance features to reach 55
-    #     # Using contour points and other key landmarks
-    #     additional_indices = [
-    #         (70, 300),  # Eyebrow to eyebrow
-    #         (33, 133),  # Left eye width
-    #         (263, 362),  # Right eye width
-    #         (78, 308),  # Upper lip
-    #         (13, 14),  # Lower face
-    #         (10, 152),  # Full face height
-    #         (234, 454),  # Face width
-    #         (127, 356),  # Nose width
-    #     ]
-
-    #     for i, j in additional_indices:
-    #         dist = np.linalg.norm(lm_array[i] - lm_array[j])
-    #         features.append(dist)
-
-    #     # Fill remaining features with landmark position statistics
-    #     while len(features) < 64:
-    #         # Add variance and mean of landmark positions as features
-    #         if len(features) < 64:
-    #             features.append(np.mean(lm_array[:, 0]))  # Mean x
-    #         if len(features) < 64:
-    #             features.append(np.mean(lm_array[:, 1]))  # Mean y
-    #         if len(features) < 64:
-    #             features.append(np.std(lm_array[:, 0]))  # Std x
-    #         if len(features) < 64:
-    #             features.append(np.std(lm_array[:, 1]))  # Std y
-    #         if len(features) < 64:
-    #             features.append(np.mean(lm_array[:, 2]))  # Mean z (depth)
-    #         if len(features) < 64:
-    #             features.append(np.std(lm_array[:, 2]))  # Std z
-    #         if len(features) < 64:
-    #             # Add more statistical features
-    #             features.append(np.max(lm_array[:, 0]) - np.min(lm_array[:, 0]))  # x range
-    #         if len(features) < 64:
-    #             features.append(np.max(lm_array[:, 1]) - np.min(lm_array[:, 1]))  # y range
-
-    #     # Ensure exactly 64 features
-    #     features = np.array(features[:64], dtype=np.float32)
-
-    #     # 🔍 ENSURE EXACTLY 64
-    #     if len(features) < 64:
-    #         # Pad with zeros
-    #         features = np.pad(features, (0, 64 - len(features)), mode='constant')
-    #     elif len(features) > 64:
-    #         # Truncate
-    #         features = features[:64]
-        
-    #     assert features.shape == (64,), f"❌ Features shape {features.shape}, expected (64,)"
-        
-
-    #     return features
-
     def _compute_features_from_landmarks(self, landmarks, image_shape):
         """
         Compute 50-dimensional feature vector from MediaPipe 478 face landmarks:
@@ -956,18 +819,6 @@ class VideoDeceptionDataset(Dataset):
         
         return features
 
-    # def _eye_aspect_ratio(self, eye_points):
-    #     """Calculate Eye Aspect Ratio (EAR) for eye openness"""
-    #     # Vertical distances
-    #     v1 = np.linalg.norm(eye_points[1] - eye_points[5])
-    #     v2 = np.linalg.norm(eye_points[2] - eye_points[4])
-
-    #     # Horizontal distance
-    #     h = np.linalg.norm(eye_points[0] - eye_points[3])
-
-    #     # EAR formula
-    #     ear = (v1 + v2) / (2.0 * h + 1e-6)
-    #     return ear
     def _eye_aspect_ratio(self, points, side='left'):
         """Calculate Eye Aspect Ratio (EAR) for blink detection"""
         if side == 'left':
@@ -1000,18 +851,6 @@ class VideoDeceptionDataset(Dataset):
         height = np.linalg.norm(brow_point - eye_point)
         return height
 
-    # def _mouth_aspect_ratio(self, mouth_points):
-    #     """Calculate Mouth Aspect Ratio (MAR) for mouth openness"""
-    #     # Vertical distances
-    #     v1 = np.linalg.norm(mouth_points[2] - mouth_points[3])
-    #     v2 = np.linalg.norm(mouth_points[4] - mouth_points[5])
-
-    #     # Horizontal distance
-    #     h = np.linalg.norm(mouth_points[0] - mouth_points[1])
-
-    #     # MAR formula
-    #     mar = (v1 + v2) / (2.0 * h + 1e-6)
-    #     return mar
     def _mouth_aspect_ratio(self, points):
         """Calculate Mouth Aspect Ratio (MAR)"""
         # Upper and lower lip center points
@@ -1078,65 +917,137 @@ class VideoDeceptionDataset(Dataset):
     def __len__(self):
         return len(self.video_list)
 
+    # def __getitem__(self, idx):
+    #     video_path = self.video_list[idx]
+    #     label = self.labels[idx]
+
+    #     # Enable verbose debugging for first 2 videos
+    #     if idx < 2:
+    #         print(f"\n\n{'#'*70}")
+    #         print(f"# PROCESSING SAMPLE {idx}")
+    #         print(f"# Video: {os.path.basename(video_path)}")
+    #         print(f"{'#'*70}\n")
+        
+    #     # Extract frames with debugging
+       
+
+    #     try:
+    #         frames = self._sample_frames(video_path)
+        
+    #         if frames is None  or frames.size == 0:
+    #             print(f"❌ Frames is None, creating dummy frames")
+    #             frames = np.zeros((self.num_frames, self.frame_size[0], self.frame_size[1], 3), dtype=np.uint8)
+            
+    #         # Extract behavioral features with debugging
+    #         behavioral_features = self._extract_behavioral_features(frames)
+
+            
+    #         # Extract face frames
+    #         if frames is None or frames.size == 0:
+    #             frames = np.zeros((self.num_frames, self.frame_size[0], self.frame_size[1], 3), dtype=np.uint8)
+
+    #         # Extract audio
+    #         audio_wave, audio_mel = self._extract_audio(video_path)
+
+    #         # Extract behavioral features (OpenFace + Affect)
+    #         # behavioral_features = self._extract_behavioral_features(frames)
+
+    #         # 🔍 Validate behavioral features shape
+    #         if behavioral_features.shape != (self.num_frames, 64): #50
+    #             print(f"⚠️ Invalid behavioral features shape {behavioral_features.shape} for {os.path.basename(video_path)}")
+    #             behavioral_features = np.zeros((self.num_frames, 64), dtype=np.float32) #50
+            
+    #         # Convert face frames to tensor: (T, H, W, C) -> (C, T, H, W) for the model
+    #         frames = torch.from_numpy(frames).permute(3, 0, 1, 2).float()
+    #         # Normalize to [-1, 1]
+    #         frames = (frames / 255.0 - 0.5) * 2.0
+
+    #         # 🔍 DEBUG: Print shapes
+    #         if idx % 50 == 0:  # Print for first sample
+    #             print(f"\n🔍 Info for video: {os.path.basename(video_path)}")
+    #             print(f"  Frames shape: {frames.shape}")
+    #             print(f"  Behavioral features shape: {behavioral_features.shape}")
+    #             print(f"  Behavioral features sample: {behavioral_features[0][:10]}")  # First 10 features
+    #             print(f"  Non-zero features: {np.count_nonzero(behavioral_features)}/{behavioral_features.size}")
+            
+    #         # Convert behavioral features to tensor
+    #         behavioral_features = torch.from_numpy(behavioral_features).float()
+            
+    #         sample = {
+    #             'vision_behaviour': behavioral_features,  # (T=64, 64)
+    #             'vision_face': frames,  # (C=3, T=64, H=160, W=160)
+    #             'audio_mel': audio_mel,  # (C=3, n_mels=128, time)
+    #             'audio_wave': audio_wave,  # (audio_length,)
+    #             'label': torch.tensor(label, dtype=torch.long),
+    #             'videoname': os.path.basename(video_path)
+    #         }
+
+    #         return sample
+
+    #     except Exception as e:
+    #         print(f"❌ Error processing {os.path.basename(video_path)}: {str(e)}")
+    #         # Return a safe dummy sample
+    #         return self._get_dummy_sample(label, video_path)
+
     def __getitem__(self, idx):
         video_path = self.video_list[idx]
         label = self.labels[idx]
 
         # Enable verbose debugging for first 2 videos
         if idx < 2:
-            print(f"\n\n{'#'*70}")
-            print(f"# PROCESSING SAMPLE {idx}")
-            print(f"# Video: {os.path.basename(video_path)}")
-            print(f"{'#'*70}\n")
-        
-        # Extract frames with debugging
-        frames = self._sample_frames(video_path)
-        
-        if frames is None:
-            print(f"❌ Frames is None, creating dummy frames")
-            frames = np.zeros((self.num_frames, self.frame_size[0], self.frame_size[1], 3), dtype=np.uint8)
-        
-        # Extract behavioral features with debugging
-        behavioral_features = self._extract_behavioral_features(frames)
+            print(f"\n{'#'*60}")
+            print(f"# PROCESSING SAMPLE {idx}: {os.path.basename(video_path)}")
+            print(f"{'#'*60}")
 
         try:
-            # Extract face frames
+            # LOAD FRAMES
             frames = self._sample_frames(video_path)
+        
             if frames is None or frames.size == 0:
-                frames = np.zeros((self.num_frames, self.frame_size[0], self.frame_size[1], 3), dtype=np.uint8)
-
-            # Extract audio
-            audio_wave, audio_mel = self._extract_audio(video_path)
-
-            # Extract behavioral features (OpenFace + Affect)
+                print(f"❌ Frames is None, creating dummy frames")
+                # Return dummy immediately, don't proceed
+                return self._get_dummy_sample(label, video_path)
+            
+            # EXTRACT BEHAVIORAL FEATURES
+            # This returns shape (64, 50)
             behavioral_features = self._extract_behavioral_features(frames)
 
-            # 🔍 Validate behavioral features shape
-            if behavioral_features.shape != (self.num_frames, 50): #64
-                print(f"⚠️ Invalid behavioral features shape {behavioral_features.shape} for {os.path.basename(video_path)}")
-                behavioral_features = np.zeros((self.num_frames, 50), dtype=np.float32) #64
+            # FIX THE SHAPE MISMATCH (The Fix for your Warning)
+            EXPECTED_RAW_DIM = 50
             
-            # Convert face frames to tensor: (T, H, W, C) -> (C, T, H, W) for the model
-            frames = torch.from_numpy(frames).permute(3, 0, 1, 2).float()
-            # Normalize to [-1, 1]
-            frames = (frames / 255.0 - 0.5) * 2.0
+            # Validate shape
+            if behavioral_features.shape[1] != EXPECTED_RAW_DIM:
+                print(f"⚠️ Fixing behavioral shape: {behavioral_features.shape} -> {EXPECTED_RAW_DIM}")
+                
+                if behavioral_features.shape[1] < EXPECTED_RAW_DIM:
+                    # Pad if we somehow got less than 50 (rare error case)
+                    padding = np.zeros((self.num_frames, EXPECTED_RAW_DIM - behavioral_features.shape[1]), dtype=np.float32)
+                    behavioral_features = np.concatenate([behavioral_features, padding], axis=1)
+                else:
+                    # Crop if we got more
+                    behavioral_features = behavioral_features[:, :EXPECTED_RAW_DIM]
 
-            # 🔍 DEBUG: Print shapes
-            if idx % 50 == 0:  # Print for first sample
-                print(f"\n🔍 Info for video: {os.path.basename(video_path)}")
-                print(f"  Frames shape: {frames.shape}")
-                print(f"  Behavioral features shape: {behavioral_features.shape}")
-                print(f"  Behavioral features sample: {behavioral_features[0][:10]}")  # First 10 features
-                print(f"  Non-zero features: {np.count_nonzero(behavioral_features)}/{behavioral_features.size}")
-            
+            # 4. EXTRACT AUDIO
+            audio_wave, audio_mel = self._extract_audio(video_path)
+
+            # 5. PREPARE TENSORS
+            # Convert face frames to tensor: (T, H, W, C) -> (C, T, H, W)
+            frames_tensor = torch.from_numpy(frames).permute(3, 0, 1, 2).float()
+            # Normalize to [-1, 1]
+            frames_tensor = (frames_tensor / 255.0 - 0.5) * 2.0
+
             # Convert behavioral features to tensor
-            behavioral_features = torch.from_numpy(behavioral_features).float()
+            behavioral_tensor = torch.from_numpy(behavioral_features).float()
             
+            # 6. DEBUG (Optional)
+            if idx % 50 == 0:
+                print(f"✅ Loaded {os.path.basename(video_path)} | Feat Shape: {behavioral_tensor.shape}")
+
             sample = {
-                'vision_behaviour': behavioral_features,  # (T=64, 64)
-                'vision_face': frames,  # (C=3, T=64, H=160, W=160)
-                'audio_mel': audio_mel,  # (C=3, n_mels=128, time)
-                'audio_wave': audio_wave,  # (audio_length,)
+                'vision_behaviour': behavioral_tensor,  # (T=64, 64)
+                'vision_face': frames_tensor,           # (C=3, T=64, H=160, W=160)
+                'audio_mel': audio_mel,                 # (C=3, n_mels=128, time)
+                'audio_wave': audio_wave,               # (audio_length,)
                 'label': torch.tensor(label, dtype=torch.long),
                 'videoname': os.path.basename(video_path)
             }
@@ -1145,7 +1056,6 @@ class VideoDeceptionDataset(Dataset):
 
         except Exception as e:
             print(f"❌ Error processing {os.path.basename(video_path)}: {str(e)}")
-            # Return a safe dummy sample
             return self._get_dummy_sample(label, video_path)
 
 class FocalLoss(nn.Module):
@@ -1171,7 +1081,7 @@ class FocalLoss(nn.Module):
         else:
             return focal_loss
 
-def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch, args):
+def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch, args, scaler):
     """Train for one epoch"""
     model.train()
 
@@ -1183,9 +1093,10 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch, args
     correct = 0
     total = 0
 
+    aux_weight = 0.2
 
     for i, sample_batched in enumerate(dataloader):
-        print(f"Batch {i+1} loaded", flush=True) 
+        # print(f"Batch {i+1} loaded", flush=True) 
         # Get data
         vision_behaviour = sample_batched['vision_behaviour'].to(device)  # (B, T, 64)
         vision_face = sample_batched['vision_face'].to(device)  # (B, C, T, H, W)
@@ -1196,32 +1107,47 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch, args
         # Forward pass
         optimizer.zero_grad()
 
-        # Call fusion model with all 4 modalities
-        fused_logit, vl_logit, face_logit, al_logit, feat_list = model(
-            vision_behaviour, vision_face, audio_mel, audio_wave
-        )
+        with autocast():
+            # Call fusion model with all 4 modalities
+            fused_logit, vl_logit, face_logit, al_logit, feat_list = model(
+                vision_behaviour, vision_face, audio_mel, audio_wave
+            )
 
-        # Calculate losses
-        global_loss = criterion(fused_logit, labels)
+            # Calculate losses
+            global_loss = criterion(fused_logit, labels)
 
-        if vl_logit is not None:
-            vl_loss = criterion(vl_logit, labels)
-            face_loss = criterion(face_logit, labels)
-            al_loss = criterion(al_logit, labels)
-            loss = global_loss + vl_loss + face_loss + al_loss
-        else:
-            loss = global_loss
-            vl_loss = torch.tensor(0.0)
-            face_loss = torch.tensor(0.0)
-            al_loss = torch.tensor(0.0)
+            if vl_logit is not None:
+                vl_loss = criterion(vl_logit, labels)
+                face_loss = criterion(face_logit, labels)
+                al_loss = criterion(al_logit, labels)
 
-        # Backward pass
-        loss.backward()
+                # Focus on Main, treat others as hints (0.2)
+                loss = global_loss + aux_weight * (vl_loss + face_loss + al_loss)
+                # loss = global_loss + vl_loss + face_loss + al_loss
+            else:
+                loss = global_loss
+                vl_loss = torch.tensor(0.0)
+                face_loss = torch.tensor(0.0)
+                al_loss = torch.tensor(0.0)
 
-        # Gradient clipping
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
 
-        optimizer.step()
+        # BACKWARD PASS WITH SCALER
+        # Scales loss to prevent underflow in float16
+        scaler.scale(loss).backward()
+
+        # Gradient clipping (Unscale first)
+        scaler.unscale_(optimizer)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)
+
+        # Optimizer Step
+        scaler.step(optimizer)
+        scaler.update()
+
+        # # Backward pass
+        # loss.backward()
+
+       
+        # optimizer.step()
 
         # Statistics
         n = vision_face.size(0)
@@ -1294,7 +1220,7 @@ def save_checkpoint(model, optimizer, epoch, current_step, best_val_acc, schedul
         'warmup_steps': warmup_steps,
         'best_val_acc': best_val_acc,
     }
-    os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+    # os.makedirs(CHECKPOINT_DIR, exist_ok=True)
     torch.save(checkpoint, os.path.join(CHECKPOINT_DIR, 'latest.pt'))
     print(f"✅ Checkpoint saved: epoch {epoch + 1}")
 
@@ -1452,22 +1378,35 @@ def main(args):
     args.device = device
 
     # Create model
-    model = LightweightFusionModule(args)
+    # model = LightweightFusionModule(args)
+    model = MinimalFusionModule(args)
     # model = FusionModule(args)
+
+    ###### FREEZING MODEL
+    for param in model.audio_model.parameters():
+        param.requires_grad = False
+    for param in model.face_model.parameters():
+        param.requires_grad = False
+
     model = model.to(device)
+
+    if torch.cuda.device_count() > 1:
+        print(f"\n🚀 Detected {torch.cuda.device_count()} GPUs! Activating DataParallel.")
+        model = nn.DataParallel(model)
 
     print(f"Model created with {sum(p.numel() for p in model.parameters())} parameters")
     log_file.write(f"Model parameters: {sum(p.numel() for p in model.parameters())}\n")
 
     ### Focal loss
-    criterion = FocalLoss(
-        alpha=class_weights.to(device),
-        gamma=2.0  # Focusing parameter
-    )
+    # criterion = FocalLoss(
+    #     alpha=class_weights.to(device),
+    #     gamma=0.3  # Focusing parameter 2.0
+    # )
 
     # Loss and optimizer
-    # criterion = nn.CrossEntropyLoss()
-    optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
+    soft_weights = torch.tensor([1.0, 1.91]).to(device)
+    criterion = nn.CrossEntropyLoss(weight=soft_weights)
+    optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-3)
 
     # Learning rate scheduler
     warmup_epochs = 1
@@ -1491,15 +1430,28 @@ def main(args):
         model, optimizer, scheduler_warmup, scheduler_cosine, device
     )
 
+    scaler = GradScaler()
+
     # Training loop
     for epoch in range(start_epoch, args.max_epochs):
         print(f"\n{'=' * 50}")
         print(f"Epoch {epoch + 1}/{args.max_epochs}")
         print(f"{'=' * 50}")
 
+        if epoch == 2:
+            if isinstance(model, nn.DataParallel):
+                actual_model = model.module
+            else:
+                actual_model = model
+            print(" Unfreezing encoders...")
+            for param in actual_model.audio_model.parameters():
+                param.requires_grad = True
+            for param in actual_model.face_model.parameters():
+                param.requires_grad = True
+
         # Train
         train_loss, train_acc = train_one_epoch(
-            model, train_loader, criterion, optimizer, device, epoch + 1, args
+            model, train_loader, criterion, optimizer, device, epoch + 1, args, scaler
         )
 
         print(f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2f}%")
@@ -1519,45 +1471,66 @@ def main(args):
                 model, val_loader, criterion, device
             )
 
-            print(f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%")
+            print(f"Epoch [{epoch + 1}] Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%")
             log_file.write(f"Epoch {epoch + 1} - Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%\n")
 
             # Save best model
             if val_acc > best_val_acc:
                 best_val_acc = val_acc
+
+                # Unwrap model before saving Best Model
+                if isinstance(model, nn.DataParallel):
+                    model_to_save = model.module
+                else:
+                    model_to_save = model
                 
+                filename = f'best_model_epoch_{epoch + 1}.pt'
+                save_path = os.path.join(CHECKPOINT_DIR, filename)
+
                 # Save to checkpoint dir (synced to S3)
-                os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+                # os.makedirs(CHECKPOINT_DIR, exist_ok=True)
                 torch.save({
                     'epoch': epoch + 1,
-                    'model_state_dict': model.state_dict(),
+                    'model_state_dict': model_to_save.state_dict(),
                     'optimizer_state_dict': optimizer.state_dict(),
                     'best_acc': best_val_acc,
-                }, os.path.join(CHECKPOINT_DIR, 'best_model.pt'))
+                }, save_path)
                 
                 # Also save to log dir
                 torch.save({
                     'epoch': epoch + 1,
-                    'model_state_dict': model.state_dict(),
+                    'model_state_dict': model_to_save.state_dict(),
                     'optimizer_state_dict': optimizer.state_dict(),
                     'best_acc': best_val_acc,
                 }, os.path.join(args.log, 'best_model.pt'))
                 print(f"🏆 Saved best model with accuracy: {best_val_acc:.2f}%")
                 log_file.write(f"Saved best model with accuracy: {best_val_acc:.2f}%\n")
 
+        # Unwrap model before passing to custom save function
+        if isinstance(model, nn.DataParallel):
+            model_for_ckpt = model.module
+        else:
+            model_for_ckpt = model
         # ⬇️ SAVE CHECKPOINT AFTER EACH EPOCH
         save_checkpoint(
-            model, optimizer, epoch, current_step, best_val_acc,
+            model_for_ckpt, optimizer, epoch, current_step, best_val_acc,
             scheduler_warmup, scheduler_cosine, warmup_steps
         )
 
         log_file.flush()
 
+    # Unwrap model before final save
+    if isinstance(model, nn.DataParallel):
+        final_model_to_save = model.module
+    else:
+        final_model_to_save = model
+
     # ⬇️ SAVE FINAL MODEL TO SAGEMAKER OUTPUT PATH
-    os.makedirs(MODEL_DIR, exist_ok=True)
-    torch.save(model.state_dict(), os.path.join(MODEL_DIR, 'model.pt'))
+    # os.makedirs(MODEL_DIR, exist_ok=True)
+    torch.save(final_model_to_save.state_dict(), os.path.join(MODEL_DIR, 'model.pt'))
+    
     torch.save({
-        'model_state_dict': model.state_dict(),
+        'model_state_dict': final_model_to_save.state_dict(),
         'args': vars(args),
         'best_acc': best_val_acc,
     }, os.path.join(MODEL_DIR, 'model_full.pt'))
@@ -1585,7 +1558,7 @@ if __name__ == "__main__":
         parser.add_argument('--log', type=str, default='logs', help='Log directory')
         parser.add_argument('--echo_batches', type=int, default=5, help='Print frequency')
         parser.add_argument('--val_interval', type=int, default=1, help='Validation interval')
-        parser.add_argument('--num_workers', type=int, default=4, help='Dataloader workers')
+        parser.add_argument('--num_workers', type=int, default=24, help='Dataloader workers')
 
         # Dataset parameters
         parser.add_argument('--train_root', type=str, default=None,
@@ -1614,7 +1587,7 @@ if __name__ == "__main__":
         # Model parameters (from your original code)
         parser.add_argument('--modalities', type=str, default='vaf',
                             help='Modalities: v=visual, a=audio, f=face')
-        parser.add_argument('--v_dim', type=int, default=64)
+        parser.add_argument('--v_dim', type=int, default=64) #64
         parser.add_argument('--a_dim', type=int, default=512)
         parser.add_argument('--f_dim', type=int, default=512)
         parser.add_argument('--common_dim', type=int, default=128)
