@@ -33,9 +33,12 @@ CHECKPOINT_DIR = os.environ.get('SM_CHECKPOINT_DIR', './checkpoints')
 # CHECKPOINT_DIR = '/home/sagemaker-user/mahsa-m2m-MMPDA-sagemaker/logs'
 MODEL_DIR = os.environ.get('SM_MODEL_DIR', './model')
 # MODEL_DIR = '/home/sagemaker-user/mahsa-m2m-MMPDA-sagemaker/logs'
+LOG_DIR = os.environ.get('SM_CHECKPOINT_DIR', './logs')
 
 os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 os.makedirs(MODEL_DIR, exist_ok=True)
+os.makedirs(LOG_DIR, exist_ok=True)
+
 # os.makedirs(OUTPUT_DIR, exist_ok=True)
 # ==================== COMPREHENSIVE WARNING SUPPRESSION ====================
 
@@ -1170,8 +1173,46 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch, args
     epoch_acc = 100 * correct / total
     return loss_global.avg, epoch_acc
 
+# def validate(model, dataloader, criterion, device):
+#     """Validate the model"""
+#     model.eval()
+
+#     loss_meter = AvgrageMeter()
+#     all_preds = []
+#     all_labels = []
+#     all_scores = []
+
+#     with torch.no_grad():
+#         for sample_batched in dataloader:
+#             vision_behaviour = sample_batched['vision_behaviour'].to(device)
+#             vision_face = sample_batched['vision_face'].to(device)
+#             audio_mel = sample_batched['audio_mel'].to(device)
+#             audio_wave = sample_batched['audio_wave'].to(device)
+#             labels = sample_batched['label'].to(device)
+
+#             # Forward pass
+#             fused_logit, _, _, _, _ = model(
+#                 vision_behaviour, vision_face, audio_mel, audio_wave
+#             )
+
+#             loss = criterion(fused_logit, labels)
+#             loss_meter.update(loss.item(), vision_face.size(0))
+
+#             probs = F.softmax(fused_logit, dim=1)
+#             _, predicted = torch.max(fused_logit.data, 1)
+
+#             all_preds.extend(predicted.cpu().numpy())
+#             all_labels.extend(labels.cpu().numpy())
+#             all_scores.extend(probs[:, 1].cpu().numpy())
+
+#     # Calculate metrics
+#     correct = sum([p == l for p, l in zip(all_preds, all_labels)])
+#     accuracy = 100 * correct / len(all_labels)
+
+#     return loss_meter.avg, accuracy, all_preds, all_labels, all_scores
+
 def validate(model, dataloader, criterion, device):
-    """Validate the model"""
+    """Validate the model with Accuracy and F1 Score"""
     model.eval()
 
     loss_meter = AvgrageMeter()
@@ -1198,15 +1239,21 @@ def validate(model, dataloader, criterion, device):
             probs = F.softmax(fused_logit, dim=1)
             _, predicted = torch.max(fused_logit.data, 1)
 
+            # Move to CPU for sklearn metrics
             all_preds.extend(predicted.cpu().numpy())
             all_labels.extend(labels.cpu().numpy())
             all_scores.extend(probs[:, 1].cpu().numpy())
 
-    # Calculate metrics
+    # Calculate Accuracy
     correct = sum([p == l for p, l in zip(all_preds, all_labels)])
     accuracy = 100 * correct / len(all_labels)
 
-    return loss_meter.avg, accuracy, all_preds, all_labels, all_scores
+    # Calculate F1 Score
+    # average='weighted' accounts for class imbalance (Truth > Deceptive)
+    f1 = f1_score(all_labels, all_preds, average='weighted')
+
+    # Return f1 as well
+    return loss_meter.avg, accuracy, f1, all_preds, all_labels, all_scores
 
 def save_checkpoint(model, optimizer, epoch, current_step, best_val_acc, scheduler_warmup, scheduler_cosine, warmup_steps):
     """Save checkpoint for spot instance recovery."""
@@ -1301,8 +1348,11 @@ def main(args):
     device = torch.device(f'cuda:{args.gpu}' if torch.cuda.is_available() else 'cpu')
 
     # Create log directory
-    os.makedirs(args.log, exist_ok=True)
-    log_file = open(os.path.join(args.log, 'training_log.txt'), 'a')  # Changed to 'a' for resume
+    # os.makedirs(args.log, exist_ok=True)
+    # log_file = open(os.path.join(args.log, 'training_log.txt'), 'a')  # Changed to 'a' for resume
+    log_file = open(os.path.join(LOG_DIR, 'training_log.txt'), 'a', buffering=1)
+    
+
 
     print(f"Using device: {device}")
     print(f"Arguments: {args}")
@@ -1467,12 +1517,17 @@ def main(args):
 
         # Validate
         if (epoch + 1) % args.val_interval == 0:
-            val_loss, val_acc, val_preds, val_labels, val_scores = validate(
+            # val_loss, val_acc, val_preds, val_labels, val_scores = validate(
+            #     model, val_loader, criterion, device
+            # )
+            val_loss, val_acc, val_f1, val_preds, val_labels, val_scores = validate(
                 model, val_loader, criterion, device
             )
 
-            print(f"Epoch [{epoch + 1}] Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%")
-            log_file.write(f"Epoch {epoch + 1} - Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%\n")
+            print(f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%, Val F1: {val_f1:.4f}")
+            log_file.write(f"Epoch {epoch + 1} - Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%, Val F1: {val_f1:.4f}\n")
+            # print(f"Epoch [{epoch + 1}] Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%")
+            # log_file.write(f"Epoch {epoch + 1} - Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%\n")
 
             # Save best model
             if val_acc > best_val_acc:
@@ -1496,13 +1551,13 @@ def main(args):
                     'best_acc': best_val_acc,
                 }, save_path)
                 
-                # Also save to log dir
-                torch.save({
-                    'epoch': epoch + 1,
-                    'model_state_dict': model_to_save.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'best_acc': best_val_acc,
-                }, os.path.join(args.log, 'best_model.pt'))
+                # # Also save to log dir
+                # torch.save({
+                #     'epoch': epoch + 1,
+                #     'model_state_dict': model_to_save.state_dict(),
+                #     'optimizer_state_dict': optimizer.state_dict(),
+                #     'best_acc': best_val_acc,
+                # }, os.path.join(CHECKPOINT_DIR, 'best_model.pt'))
                 print(f"🏆 Saved best model with accuracy: {best_val_acc:.2f}%")
                 log_file.write(f"Saved best model with accuracy: {best_val_acc:.2f}%\n")
 
@@ -1527,7 +1582,7 @@ def main(args):
 
     # ⬇️ SAVE FINAL MODEL TO SAGEMAKER OUTPUT PATH
     # os.makedirs(MODEL_DIR, exist_ok=True)
-    torch.save(final_model_to_save.state_dict(), os.path.join(MODEL_DIR, 'model.pt'))
+    # torch.save(final_model_to_save.state_dict(), os.path.join(MODEL_DIR, 'model.pt'))
     
     torch.save({
         'model_state_dict': final_model_to_save.state_dict(),
