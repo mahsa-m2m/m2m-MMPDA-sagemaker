@@ -2,6 +2,7 @@ venv/*
 *.pth
 *.pt
 *.mp4
+*.csv
 .DS_Store
 sample/*
 __pycache__
