@@ -1,0 +1,24 @@
+Found 53784 files in dataset/video/truthful/
+Scanning dataset/video/deceptive/...
+Found 44356 files in dataset/video/deceptive/
+Total dataset size: 98140
+------------------------------
+SPLIT SUMMARY
+------------------------------
+Training Set (Balanced): 0 rows
+Series([], Name: count, dtype: int64)
+------------------------------
+Validation Set: 14721 rows
+label
+truthful     8067
+deceptive    6654
+Name: count, dtype: int64
+------------------------------
+Test Set: 14721 rows
+label
+truthful     8068
+deceptive    6653
+Name: count, dtype: int64
+Saved train.csv to s3://deception-detection-bucket/dataset/video/train.csv
+Saved validation.csv to s3://deception-detection-bucket/dataset/video/validation.csv
+Saved test.csv to s3://deception-detection-bucket/dataset/video/test.csv

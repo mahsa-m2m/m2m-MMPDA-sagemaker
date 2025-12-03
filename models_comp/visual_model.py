@@ -438,7 +438,6 @@ class conv2d_block(nn.Module):
         x = self.relu(self.bn(self.conv(x)))
         return x
 
-
 class cnn_face(nn.Module):
     def __init__(self, ):
         super(cnn_face, self).__init__()

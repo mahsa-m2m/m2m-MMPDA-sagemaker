@@ -1255,7 +1255,7 @@ def validate(model, dataloader, criterion, device):
     # Return f1 as well
     return loss_meter.avg, accuracy, f1, all_preds, all_labels, all_scores
 
-def save_checkpoint(model, optimizer, epoch, current_step, best_val_acc, scheduler_warmup, scheduler_cosine, warmup_steps):
+def save_checkpoint(model, optimizer, epoch, current_step, best_val_acc, scheduler_warmup, scheduler_cosine, warmup_steps, min_val_loss):
     """Save checkpoint for spot instance recovery."""
     checkpoint = {
         'epoch': epoch,
@@ -1266,6 +1266,7 @@ def save_checkpoint(model, optimizer, epoch, current_step, best_val_acc, schedul
         'scheduler_cosine_state': scheduler_cosine.state_dict(),
         'warmup_steps': warmup_steps,
         'best_val_acc': best_val_acc,
+        'min_val_loss': min_val_loss
     }
     # os.makedirs(CHECKPOINT_DIR, exist_ok=True)
     torch.save(checkpoint, os.path.join(CHECKPOINT_DIR, 'latest.pt'))
@@ -1274,15 +1275,18 @@ def save_checkpoint(model, optimizer, epoch, current_step, best_val_acc, schedul
 def load_checkpoint(model, optimizer, scheduler_warmup, scheduler_cosine, device):
     """Load checkpoint if exists (after spot interruption)."""
     path = os.path.join(CHECKPOINT_DIR, 'latest.pt')
+    min_val_loss = float('inf')
     if os.path.exists(path):
         ckpt = torch.load(path, map_location=device)
         model.load_state_dict(ckpt['model_state_dict'])
         optimizer.load_state_dict(ckpt['optimizer_state_dict'])
         scheduler_warmup.load_state_dict(ckpt['scheduler_warmup_state'])
         scheduler_cosine.load_state_dict(ckpt['scheduler_cosine_state'])
+        min_val_loss = ckpt.get('min_val_loss', float('inf'))
+
         print(f"🔄 Resumed from epoch {ckpt['epoch'] + 1}")
-        return ckpt['epoch'] + 1, ckpt['current_step'], ckpt['best_val_acc']
-    return 0, 0, 0.0
+        return ckpt['epoch'] + 1, ckpt['current_step'], ckpt['best_val_acc'], min_val_loss
+    return 0, 0, 0.0, min_val_loss
 
 def compute_class_weights(dataset):
     """
@@ -1319,7 +1323,6 @@ def compute_class_weights(dataset):
     print(f"{'='*60}\n")
     
     return torch.FloatTensor(weights)
-
 
 def main(args):
 
@@ -1475,12 +1478,14 @@ def main(args):
         optimizer, T_max=total_steps - warmup_steps, eta_min=1e-6
     )
 
-    # ⬇️ LOAD CHECKPOINT IF RESUMING
-    start_epoch, current_step, best_val_acc = load_checkpoint(
+    # LOAD CHECKPOINT IF RESUMING
+    start_epoch, current_step, best_val_acc, min_val_loss = load_checkpoint(
         model, optimizer, scheduler_warmup, scheduler_cosine, device
     )
 
     scaler = GradScaler()
+    
+    val_loss = min_val_loss 
 
     # Training loop
     for epoch in range(start_epoch, args.max_epochs):
@@ -1524,12 +1529,13 @@ def main(args):
                 model, val_loader, criterion, device
             )
 
-            print(f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%, Val F1: {val_f1:.4f}")
+            # print(f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%, Val F1: {val_f1:.4f}")
+            print(f"Epoch {epoch + 1} - Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%, Val F1: {val_f1:.4f}")
             log_file.write(f"Epoch {epoch + 1} - Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%, Val F1: {val_f1:.4f}\n")
             # print(f"Epoch [{epoch + 1}] Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%")
             # log_file.write(f"Epoch {epoch + 1} - Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%\n")
 
-            # Save best model
+            # Save best model - accuracy
             if val_acc > best_val_acc:
                 best_val_acc = val_acc
 
@@ -1539,7 +1545,9 @@ def main(args):
                 else:
                     model_to_save = model
                 
-                filename = f'best_model_epoch_{epoch + 1}.pt'
+                # filename = f'best_model_epoch_{epoch + 1}.pt'
+                # filename = 'best_model_acc.pt'
+                filename = f'best_model_acc_{int(val_acc)}_ep{epoch+1}.pt'
                 save_path = os.path.join(CHECKPOINT_DIR, filename)
 
                 # Save to checkpoint dir (synced to S3)
@@ -1549,6 +1557,8 @@ def main(args):
                     'model_state_dict': model_to_save.state_dict(),
                     'optimizer_state_dict': optimizer.state_dict(),
                     'best_acc': best_val_acc,
+                    'val_loss': val_loss,
+                    'args': vars(args)
                 }, save_path)
                 
                 # # Also save to log dir
@@ -1560,16 +1570,47 @@ def main(args):
                 # }, os.path.join(CHECKPOINT_DIR, 'best_model.pt'))
                 print(f"🏆 Saved best model with accuracy: {best_val_acc:.2f}%")
                 log_file.write(f"Saved best model with accuracy: {best_val_acc:.2f}%\n")
+            
+            # Save best model - val loss
+            if val_loss < min_val_loss:
+                
+                min_val_loss = val_loss
+
+                # Save filename
+                # filename = 'best_model_loss.pt'
+                filename = f'best_model_loss_ep{epoch+1}_acc{int(val_acc)}.pt'
+
+                save_path = os.path.join(CHECKPOINT_DIR, filename)
+
+                # Unwrap model before saving Best Model
+                if isinstance(model, nn.DataParallel):
+                    model_to_save = model.module
+                else:
+                    model_to_save = model
+                
+                # Save to checkpoint dir (synced to S3)
+                # os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+                torch.save({
+                    'epoch': epoch + 1,
+                    'model_state_dict': model_to_save.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'best_acc': best_val_acc,
+                    'min_val_loss': min_val_loss,
+                    'args': vars(args)
+                }, save_path)
+                
+                print(f" New Lowest Loss: {min_val_loss:.4f} (Saved to {filename})")
+                log_file.write(f"Saved Lowest Loss model: {min_val_loss:.4f}\n")
 
         # Unwrap model before passing to custom save function
         if isinstance(model, nn.DataParallel):
             model_for_ckpt = model.module
         else:
             model_for_ckpt = model
-        # ⬇️ SAVE CHECKPOINT AFTER EACH EPOCH
+        # SAVE CHECKPOINT AFTER EACH EPOCH
         save_checkpoint(
             model_for_ckpt, optimizer, epoch, current_step, best_val_acc,
-            scheduler_warmup, scheduler_cosine, warmup_steps
+            scheduler_warmup, scheduler_cosine, warmup_steps, min_val_loss
         )
 
         log_file.flush()
@@ -1580,7 +1621,7 @@ def main(args):
     else:
         final_model_to_save = model
 
-    # ⬇️ SAVE FINAL MODEL TO SAGEMAKER OUTPUT PATH
+    # SAVE FINAL MODEL TO SAGEMAKER OUTPUT PATH
     # os.makedirs(MODEL_DIR, exist_ok=True)
     # torch.save(final_model_to_save.state_dict(), os.path.join(MODEL_DIR, 'model.pt'))
     
@@ -1588,6 +1629,7 @@ def main(args):
         'model_state_dict': final_model_to_save.state_dict(),
         'args': vars(args),
         'best_acc': best_val_acc,
+        'val_loss': val_loss
     }, os.path.join(MODEL_DIR, 'model_full.pt'))
 
     print(f"\n✅ Training completed! Best validation accuracy: {best_val_acc:.2f}%")

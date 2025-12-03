@@ -56,7 +56,7 @@ estimator = PyTorch(
     # CLI args
     hyperparameters={
         'batchsize': 16,
-        'max_epochs': 20,
+        'max_epochs': 30,
         # 'fusion_type': 'mult',
         'num_frames': 64,
         'lr': 1e-5,
