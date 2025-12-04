@@ -1581,11 +1581,11 @@ def main(args):
     else:
         raise ValueError(f"❌ Unknown model architecture: {args.model_arch}")
 
-    ###### FREEZING MODEL
-    for param in model.audio_model.parameters():
-        param.requires_grad = False
-    for param in model.face_model.parameters():
-        param.requires_grad = False
+    # ###### FREEZING MODEL
+    # for param in model.audio_model.parameters():
+    #     param.requires_grad = False
+    # for param in model.face_model.parameters():
+    #     param.requires_grad = False
 
     model = model.to(device)
 
@@ -1639,16 +1639,16 @@ def main(args):
         print(f"Epoch {epoch + 1}/{args.max_epochs}")
         print(f"{'=' * 50}")
 
-        if epoch == 2:
-            if isinstance(model, nn.DataParallel):
-                actual_model = model.module
-            else:
-                actual_model = model
-            print(" Unfreezing encoders...")
-            for param in actual_model.audio_model.parameters():
-                param.requires_grad = True
-            for param in actual_model.face_model.parameters():
-                param.requires_grad = True
+        # if epoch == 2:
+        #     if isinstance(model, nn.DataParallel):
+        #         actual_model = model.module
+        #     else:
+        #         actual_model = model
+        #     print(" Unfreezing encoders...")
+        #     for param in actual_model.audio_model.parameters():
+        #         param.requires_grad = True
+        #     for param in actual_model.face_model.parameters():
+        #         param.requires_grad = True
 
         # Train
         train_loss, train_acc = train_one_epoch(
