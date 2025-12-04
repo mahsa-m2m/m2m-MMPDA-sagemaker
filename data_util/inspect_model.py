@@ -1,10 +1,9 @@
 import torch
 
-# Load the file you saved
+# Load the saved file
 checkpoint = torch.load('/home/sagemaker-user/mahsa-m2m-MMPDA-sagemaker/checkpoints/best_model_epoch_1.pt')
 keys = checkpoint.keys() # or checkpoint['model_state_dict'].keys()
 
-# Assuming you already loaded 'checkpoint' variable
 state_dict = checkpoint['model_state_dict']
 
 # Get the list of all layer names
