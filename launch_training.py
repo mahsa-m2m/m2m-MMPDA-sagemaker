@@ -1,17 +1,18 @@
 import sagemaker
 from sagemaker.pytorch import PyTorch 
 from sagemaker import get_execution_role
+from sagemaker.inputs import TrainingInput
 # from sagemaker.debugger import ProfilerConfig, ProfilerRule, rule_configs
 
 # Get SageMaker session and role
 sess = sagemaker.Session()
 role = get_execution_role()
 
-# Your custom bucket
+# Custom bucket
 BUCKET_NAME = 'deception-detection-bucket'
 
-print(f"✓ Using role: {role}")
-print(f"✓ Using bucket: {BUCKET_NAME}")
+print(f" Using role: {role}")
+print(f" Using bucket: {BUCKET_NAME}")
 
 # CONFIGURE THE PROFILER
 # This captures system metrics (GPU, CPU, RAM, I/O) every 500ms (0.5s)
@@ -35,15 +36,20 @@ metric_definitions = [
     {'Name': 'val:acc',    'Regex': 'Val Acc: ([0-9\\.]+)%'},
 ]
 
+training_input = TrainingInput(
+    s3_data=f's3://{BUCKET_NAME}/dataset/video/', 
+    input_mode='FastFile'  # Streams instead of downloads
+)
+
 # Create PyTorch estimator
 estimator = PyTorch(
     entry_point='train_test_feature.py',
     source_dir='.',  # Uploads all files in current directory
     role=role,
-    instance_type='ml.g5.12xlarge',  # ml.g4dn.xlarge = 1x NVIDIA T4 GPU, 16GB VRAM / ml.g5.xlarge / ml.g4dn.2xlarge / ml.g5.2xlarge / ml.g5.12xlarge
+    instance_type='ml.g5.12xlarge',  # ml.g4dn.xlarge / ml.g5.xlarge / ml.g4dn.2xlarge / ml.g5.2xlarge / ml.g5.12xlarge
     instance_count=1,
     framework_version='2.0.0',
-    py_version='py310',  # ← Changed to py310 (py311 not available)
+    py_version='py310',  # (py311 not available)
     output_path=f's3://{BUCKET_NAME}/output/',
     metric_definitions=metric_definitions,
 
@@ -56,13 +62,22 @@ estimator = PyTorch(
     # CLI args
     hyperparameters={
         'batchsize': 16,
-        'max_epochs': 30,
-        # 'fusion_type': 'mult',
+        'max_epochs': 15,
+        'fusion_type': 'mult',
+        'common_dim': 128,
         'num_frames': 64,
-        'lr': 1e-5,
-        'num_workers': 40,
+        'num_heads': 8,
+        'mult_layer': 4,
+        'model_arch': 'normal',
+        'lr': 1e-4,
+        'num_workers': 20,
+
+        'train_list': '/opt/ml/input/data/training/train.csv',
+        'val_list':   '/opt/ml/input/data/training/validation.csv',
+
         'train_root': '/opt/ml/input/data/training',
         'val_root':   '/opt/ml/input/data/validation',
+
         'audio_length': 80000,
         'frame_height': 224,
         'frame_width': 224
@@ -90,10 +105,16 @@ estimator = PyTorch(
 # Map channel names to S3 paths
 # SageMaker downloads these to /opt/ml/input/data/{channel_name}/
 print("\n🚀 Submitting training job...")
+
+# We only need one channel ('training') because it contains both videos and CSVs
 estimator.fit({
-    'training': f's3://{BUCKET_NAME}/dataset/video/splitted/train/',  # ← Note: 'training' not 'train'
-    'validation': f's3://{BUCKET_NAME}/dataset/video/splitted/val/'   # ← Note: 'validation' not 'val'
+    'training': training_input
 }, wait=True)
+
+# estimator.fit({
+#     'training': f's3://{BUCKET_NAME}/dataset/video/splitted/train/',  # ← Note: 'training' not 'train'
+#     'validation': f's3://{BUCKET_NAME}/dataset/video/splitted/val/'   # ← Note: 'validation' not 'val'
+# }, wait=True)
 
 print(f"\n✅ Training job submitted!")
 print(f"Job name: {estimator.latest_training_job.name}")

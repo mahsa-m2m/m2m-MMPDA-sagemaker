@@ -126,11 +126,18 @@ class FusionModule(nn.Module):
         else:
             raise Exception("Undefined fusion type!")
 
+        # self.classifier = nn.Sequential(
+        #     nn.Linear(self.combined_dim, self.combined_dim // 2),
+        #     nn.ReLU(inplace=True),
+        #     nn.Linear(self.combined_dim // 2, 2),
+        # ) # add one dim to store
         self.classifier = nn.Sequential(
             nn.Linear(self.combined_dim, self.combined_dim // 2),
+            nn.BatchNorm1d(self.combined_dim // 2), # Added BatchNorm for stability
             nn.ReLU(inplace=True),
+            nn.Dropout(0.3),                        # Added Dropout for regularization
             nn.Linear(self.combined_dim // 2, 2),
-        ) # add one dim to store
+        )
 
     def se_fusion(self, params):
         fusion_nets = []
@@ -188,19 +195,6 @@ class FusionModule(nn.Module):
         self.proj1 = nn.Linear(2*self.combined_dim, self.combined_dim)
         self.proj2 = nn.Linear(self.combined_dim, 2*self.combined_dim)
         self.proj3 = nn.Linear(2*self.combined_dim, self.combined_dim)
-
-    def transformer_attention(self, params):
-        fusion_nets = []
-        for i in range(len(self.modalities)):
-            fusion_nets.append(TransformerEncoder(embed_dim=params.embed_dim,
-                                                  num_heads=params.num_heads,
-                                                  layers=params.layers,
-                                                  attn_dropout=params.attn_dropout,
-                                                  relu_dropout=params.relu_dropout,
-                                                  res_dropout=params.res_dropout,
-                                                  embed_dropout=params.embed_dropout,
-                                                  attn_mask=params.attn_mask).to(params.device))
-        return fusion_nets
 
     def forward(self, vision_behaviour, vision_face, audio_mel,  audio_wave):
         feature_list = []
@@ -428,7 +422,7 @@ class LightweightFusionModule(nn.Module):
             batch_first=True
         )
         
-        # CHANGE 5: Simpler classifier with dropout
+        # Simpler classifier with dropout
         self.classifier = nn.Sequential(
             nn.Dropout(0.5),  # High dropout for regularization
             nn.Linear(self.combined_dim, self.combined_dim // 4),
@@ -484,7 +478,7 @@ class LightweightFusionModule(nn.Module):
         else:
             return fused_logits, None, None, None, [vision_feats, face_feats, audio_feats, fused]
 
-# ALTERNATIVE: Even simpler concatenation-based fusion (2-5M params)
+# Even simpler concatenation-based fusion (2-5M params)
 class MinimalFusionModule(nn.Module):
     """Ultra-light fusion - just concatenate and classify"""
     def __init__(self, args):

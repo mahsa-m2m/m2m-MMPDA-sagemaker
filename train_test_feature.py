@@ -20,7 +20,7 @@ import logging
 import traceback 
 import mediapipe as mp
 from torch.cuda.amp import autocast, GradScaler
-
+import pandas as pd
 
 from sklearn.metrics import (
     accuracy_score, precision_score, recall_score, f1_score,
@@ -40,25 +40,20 @@ os.makedirs(MODEL_DIR, exist_ok=True)
 os.makedirs(LOG_DIR, exist_ok=True)
 
 # os.makedirs(OUTPUT_DIR, exist_ok=True)
-# ==================== COMPREHENSIVE WARNING SUPPRESSION ====================
+# ==================== WARNING SUPPRESSION ====================
 
-# 1. Suppress Python warnings
+# Suppress Python warnings
 warnings.filterwarnings('ignore')
 warnings.filterwarnings('ignore', category=UserWarning)
 warnings.filterwarnings('ignore', category=FutureWarning)
 warnings.filterwarnings('ignore', category=DeprecationWarning)
 
 
-# Now import librosa with proper backend (without resampy dependency)
-# FIX: Use scipy resampler instead of resampy
+# Use scipy resampler instead of resampy
 os.environ['LIBROSA_RESAMPLE_BACKEND'] = 'scipy'
+
 import librosa
-
-# ============================================================================
-
-# Import your models
-# from models_comp.fusion_model import FusionModule
-from models_comp.fusion_model import LightweightFusionModule, MinimalFusionModule
+from models_comp.fusion_model import FusionModule, LightweightFusionModule, MinimalFusionModule
 from utils import AvgrageMeter, performances
 import DALoss
 import DANetwork
@@ -68,15 +63,15 @@ def install_system_dependencies():
     Installs system-level dependencies required for Video/Audio processing
     and OpenCV on standard SageMaker containers.
     """
-    print("⚙️ Checking system dependencies...")
+    print(" Checking system dependencies...")
     try:
         # We use ffmpeg as a proxy to check if we've already installed packages
         subprocess.check_call(['ffmpeg', '-version'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        print("   ✅ System dependencies appear to be installed.")
+        print(" ✅ System dependencies appear to be installed.")
     except (OSError, subprocess.CalledProcessError):
-        print("   🔧 System dependencies missing. Installing via apt-get...")
+        print(" 🔧 System dependencies missing. Installing via apt-get...")
         try:
-            # Install ALL required libraries in one go
+            # Install ALL required libraries
             # 1. ffmpeg: Video processing
             # 2. libsndfile1: Audio loading (librosa)
             # 3. libgl1 & libglib2.0-0: OpenCV graphics dependencies
@@ -86,8 +81,6 @@ def install_system_dependencies():
             print("   ✅ All system dependencies installed successfully.")
         except Exception as e:
             print(f"   ❌ Failed to install dependencies: {e}")
-            # We don't exit here, we let the script try to run anyway, 
-            # though it will likely crash on import.
 
 def setup_seed(seed):
     np.random.seed(seed)
@@ -115,7 +108,7 @@ class VideoDeceptionDataset(Dataset):
             ...
     """
 
-    def __init__(self, data_root=None, annotation_file=None,
+    def __init__(self, csv_file=None, data_root=None, annotation_file=None,
                  num_frames=50, frame_size=(160, 160),
                  audio_length=16000, sample_rate=16000,
                  n_mels=128, mode='train'):
@@ -139,24 +132,30 @@ class VideoDeceptionDataset(Dataset):
         self.video_list = []
         self.labels = []
 
-        # Don't initialize MediaPipe here - will be done per worker process
         self.face_mesh = None
         self.face_mesh_initialized = False
         self.mp_face_mesh = mp.solutions.face_mesh
 
-        # Load from directory structure
-        if data_root is not None:
+         # --- LOAD DATA LOGIC ---
+        if csv_file is not None and os.path.exists(csv_file):
+            self._load_from_csv(csv_file, data_root)
+        elif data_root is not None:
             self._load_from_directory(data_root)
-        # Load from annotation file
-        elif annotation_file is not None:
-            self._load_from_annotation(annotation_file)
         else:
-            raise ValueError("Either data_root or annotation_file must be provided")
+            raise ValueError("Either csv_file or data_root must be provided")
+        # # Load from directory structure
+        # if data_root is not None:
+        #     self._load_from_directory(data_root)
+        # # Load from annotation file
+        # elif annotation_file is not None:
+        #     self._load_from_annotation(annotation_file)
+        # else:
+        #     raise ValueError("Either data_root or annotation_file must be provided")
 
     def _init_mediapipe(self):
         """
         Initialize MediaPipe Face Mesh
-        This needs to be called in each worker process
+        Be called in each worker process
         """
         if self.face_mesh_initialized:
             return
@@ -165,7 +164,7 @@ class VideoDeceptionDataset(Dataset):
             print("🔧 Initializing MediaPipe Face Mesh...")
             self.face_mesh = self.mp_face_mesh.FaceMesh(
                 static_image_mode=True,  # Use True for video frames
-                max_num_faces=3,  # Only detect 1 face per frame
+                max_num_faces=3,  # detect 3 faces per frame
                 refine_landmarks=True,  # Get more detailed landmarks
                 min_detection_confidence=0.4,
                 min_tracking_confidence=0.4
@@ -179,6 +178,152 @@ class VideoDeceptionDataset(Dataset):
             self.face_mesh = None
             self.face_mesh_initialized = False
     
+    # def _load_from_csv(self, csv_file):
+    #     """
+    #     Load paths and labels from the CSV generated in the previous step.
+    #     Format expected: [file_path, label_string]
+    #     """
+    #     print(f" Loading dataset from CSV: {csv_file}")
+        
+    #     # Mapping string labels to integers
+    #     label_map = {
+    #         'truthful': 0, 
+    #         'deceptive': 1, 
+    #         'truth': 0, 
+    #         'lie': 1,
+    #         '0': 0,
+    #         '1': 1
+    #     }
+
+    #     # Read CSV using Pandas (header=None because your previous script set header=False)
+    #     try:
+    #         df = pd.read_csv(csv_file, header=None)
+            
+    #         # Check if there is a header row accidentally
+    #         first_val = str(df.iloc[0, 0]).lower()
+    #         if 'path' in first_val or 'file' in first_val:
+    #             df = pd.read_csv(csv_file) # Reload with header detected
+    #             # Rename columns for consistency
+    #             df.columns = ['path', 'label']
+    #         else:
+    #             # Rename columns manually
+    #             df.columns = ['path', 'label']
+
+    #     except Exception as e:
+    #         print(f"❌ Error reading CSV with Pandas: {e}")
+    #         return
+
+    #     valid_count = 0
+    #     missing_count = 0
+
+    #     for index, row in df.iterrows():
+    #         video_path = str(row['path']).strip()
+    #         label_raw = str(row['label']).strip().lower()
+
+    #         # Map label
+    #         if label_raw in label_map:
+    #             label = label_map[label_raw]
+    #         else:
+    #             print(f"⚠️ Unknown label '{label_raw}' in row {index}. Skipping.")
+    #             continue
+
+    #         # Verify file exists
+    #         if os.path.exists(video_path):
+    #             self.video_list.append(video_path)
+    #             self.labels.append(label)
+    #             valid_count += 1
+    #         else:
+    #             # print(f"⚠️ File not found: {video_path}")
+    #             missing_count += 1
+
+    #     print(f"✅ Loaded {valid_count} videos from CSV.")
+    #     if missing_count > 0:
+    #         print(f"⚠️ Skipped {missing_count} missing files.")
+    #     print(f"   Truthful: {self.labels.count(0)}")
+    #     print(f"   Deceptive: {self.labels.count(1)}")
+    def _load_from_csv(self, csv_file, data_root):
+            """
+            Load paths and labels from CSV, converting S3 paths to local container paths.
+            Input CSV format: [s3_path, label] with a header.
+            """
+            print(f"📄 Loading dataset from CSV: {csv_file}")
+            
+            # Label mapping
+            label_map = {'truthful': 0, 'deceptive': 1, 'truth': 0, 'lie': 1}
+
+            try:
+                # Read CSV. Detect the header automatically
+                df = pd.read_csv(csv_file)
+                
+                # Ensure we have columns. If not, fallback to index.
+                if 's3_path' not in df.columns and 'path' not in df.columns:
+                    # If pandas didn't detect header, reload assuming first row is data
+                    df = pd.read_csv(csv_file, header=None)
+                    df.columns = ['path', 'label']
+                else:
+                    # Normalize column names to 'path' and 'label'
+                    cols = list(df.columns)
+                    # Rename the column that looks like a path (e.g. 's3_path') to 'path'
+                    rename_map = {c: 'path' for c in cols if 'path' in c.lower()}
+                    # Rename the column that looks like a label to 'label'
+                    rename_map.update({c: 'label' for c in cols if 'label' in c.lower()})
+                    df.rename(columns=rename_map, inplace=True)
+
+            except Exception as e:
+                print(f"❌ Error reading CSV with Pandas: {e}")
+                return
+
+            valid_count = 0
+            missing_count = 0
+
+            for index, row in df.iterrows():
+                raw_path = str(row['path']).strip()
+                label_raw = str(row['label']).strip().lower()
+
+                # Map Label
+                if label_raw in label_map:
+                    label = label_map[label_raw]
+                else:
+                    # Skip unknown labels
+                    continue
+
+                # CONSTRUCT LOCAL PATH
+                # Input: s3://bucket/.../dataset/video/deceptive/video.mkv
+                # Goal:  /opt/ml/input/data/training/deceptive/video.mkv
+                
+                filename = os.path.basename(raw_path) # "video.mkv"
+                
+                # Determine subfolder based on the path string (safest) or label
+                if '/truthful/' in raw_path.lower():
+                    subfolder = 'truthful'
+                elif '/deceptive/' in raw_path.lower():
+                    subfolder = 'deceptive'
+                else:
+                    # Fallback: guess folder based on label
+                    subfolder = 'truthful' if label == 0 else 'deceptive'
+
+                # Construct the final local path
+                if data_root:
+                    final_path = os.path.join(data_root, subfolder, filename)
+                else:
+                    # Fallback for local testing if data_root isn't set
+                    final_path = raw_path
+
+                # Verify existence
+                if os.path.exists(final_path):
+                    self.video_list.append(final_path)
+                    self.labels.append(label)
+                    valid_count += 1
+                else:
+                    if missing_count < 3: 
+                        print(f"⚠️ File not found: {final_path}")
+                        print(f"   (Original S3 path: {raw_path})")
+                    missing_count += 1
+
+            print(f"✅ Loaded {valid_count} videos.")
+            if missing_count > 0:
+                print(f"⚠️ Skipped {missing_count} missing files (check path mapping).")
+
     def _load_from_directory(self, data_root):
         """Load videos from directory structure"""
         data_root = Path(data_root)
@@ -723,7 +868,7 @@ class VideoDeceptionDataset(Dataset):
             left_corner_height, right_corner_height, mouth_opening, lip_distance, mouth_asymmetry
         ])  # 10 features
         
-        # --- Nose & Cheeks (5 features) ---
+        # --- Nose and Cheeks (5 features) ---
         # AU9 (Nose Wrinkler), AU11 (Nasolabial Deepener)
         nose_width = np.linalg.norm(points[129] - points[358])
         nose_tip_height = np.linalg.norm(points[1] - points[2])
@@ -739,7 +884,7 @@ class VideoDeceptionDataset(Dataset):
             nose_width, nose_tip_height, left_nasolabial, right_nasolabial, nose_to_chin
         ])  # 5 features
         
-        # Total AU features: 12 + 8 + 10 + 5 = 35 ✓
+        # Total AU features: 12 + 8 + 10 + 5 = 35 
         
         # ============================================================
         # PART 2: GAZE FEATURES (8 features)
@@ -1173,44 +1318,6 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch, args
     epoch_acc = 100 * correct / total
     return loss_global.avg, epoch_acc
 
-# def validate(model, dataloader, criterion, device):
-#     """Validate the model"""
-#     model.eval()
-
-#     loss_meter = AvgrageMeter()
-#     all_preds = []
-#     all_labels = []
-#     all_scores = []
-
-#     with torch.no_grad():
-#         for sample_batched in dataloader:
-#             vision_behaviour = sample_batched['vision_behaviour'].to(device)
-#             vision_face = sample_batched['vision_face'].to(device)
-#             audio_mel = sample_batched['audio_mel'].to(device)
-#             audio_wave = sample_batched['audio_wave'].to(device)
-#             labels = sample_batched['label'].to(device)
-
-#             # Forward pass
-#             fused_logit, _, _, _, _ = model(
-#                 vision_behaviour, vision_face, audio_mel, audio_wave
-#             )
-
-#             loss = criterion(fused_logit, labels)
-#             loss_meter.update(loss.item(), vision_face.size(0))
-
-#             probs = F.softmax(fused_logit, dim=1)
-#             _, predicted = torch.max(fused_logit.data, 1)
-
-#             all_preds.extend(predicted.cpu().numpy())
-#             all_labels.extend(labels.cpu().numpy())
-#             all_scores.extend(probs[:, 1].cpu().numpy())
-
-#     # Calculate metrics
-#     correct = sum([p == l for p, l in zip(all_preds, all_labels)])
-#     accuracy = 100 * correct / len(all_labels)
-
-#     return loss_meter.avg, accuracy, all_preds, all_labels, all_scores
-
 def validate(model, dataloader, criterion, device):
     """Validate the model with Accuracy and F1 Score"""
     model.eval()
@@ -1328,31 +1435,13 @@ def main(args):
 
     # install_ffmpeg()
 
-    # === START OF main(args) ===
-    print(f"DEBUG: Checking path {args.train_root}")
-    if os.path.exists(args.train_root):
-        contents = os.listdir(args.train_root)
-        print(f"DEBUG: Folder contents: {contents}")
-        
-        # Check for class folders
-        for cls in ['truthful', 'deceptive']:
-            cls_path = os.path.join(args.train_root, cls)
-            if os.path.exists(cls_path):
-                files = os.listdir(cls_path)
-                print(f"DEBUG: Found '{cls}' with {len(files)} files.")
-            else:
-                print(f"DEBUG: ❌ CRITICAL: Folder '{cls}' MISSING in {args.train_root}")
-    else:
-        print(f"DEBUG: ❌ CRITICAL: Path {args.train_root} does not exist.")
-    # ====================================
-
     # Setup
     setup_seed(42)
     device = torch.device(f'cuda:{args.gpu}' if torch.cuda.is_available() else 'cpu')
 
     # Create log directory
     # os.makedirs(args.log, exist_ok=True)
-    # log_file = open(os.path.join(args.log, 'training_log.txt'), 'a')  # Changed to 'a' for resume
+    # log_file = open(os.path.join(args.log, 'training_log.txt'), 'a')  # 'a' for resume
     log_file = open(os.path.join(LOG_DIR, 'training_log.txt'), 'a', buffering=1)
     
 
@@ -1361,53 +1450,101 @@ def main(args):
     print(f"Arguments: {args}")
     log_file.write(f"Arguments: {args}\n")
 
-    # Create datasets
-    if args.train_root:
+    # --- Training Set ---
+    if args.train_list:
+        print(f"\n  Initializing Training Dataset from CSV: {args.train_list}")
+        if not os.path.exists(args.train_list):
+            raise FileNotFoundError(f"Training CSV not found: {args.train_list}")
+            
+        train_dataset = VideoDeceptionDataset(
+            csv_file=args.train_list,
+            data_root=args.train_root,
+            num_frames=args.num_frames,
+            frame_size=(args.frame_height, args.frame_width),
+            mode='train'
+        )
+    elif args.train_root:
+        print(f"\n🏗️  Initializing Training Dataset from Folder: {args.train_root}")
         train_dataset = VideoDeceptionDataset(
             data_root=args.train_root,
             num_frames=args.num_frames,
             frame_size=(args.frame_height, args.frame_width),
-            audio_length=args.audio_length,
-            sample_rate=args.sample_rate,
-            n_mels=args.n_mels,
             mode='train'
         )
     else:
-        train_dataset = VideoDeceptionDataset(
-            annotation_file=args.train_list,
-            num_frames=args.num_frames,
-            frame_size=(args.frame_height, args.frame_width),
-            audio_length=args.audio_length,
-            sample_rate=args.sample_rate,
-            n_mels=args.n_mels,
-            mode='train'
-        )
+        raise ValueError("❌ Error: You must provide either --train_list (CSV) or --train_root (Folder)")
 
-    if args.val_root:
+    # --- Validation Set ---
+    if args.val_list:
+        print(f"\n🏗️  Initializing Validation Dataset from CSV: {args.val_list}")
+        if not os.path.exists(args.val_list):
+            print(f"⚠️ Warning: Validation CSV not found at {args.val_list}. skipping validation.")
+            val_dataset = None
+        else:
+            val_dataset = VideoDeceptionDataset(
+                csv_file=args.val_list,
+                data_root=args.train_root,
+                num_frames=args.num_frames,
+                frame_size=(args.frame_height, args.frame_width),
+                mode='val'
+            )
+    elif args.val_root:
         val_dataset = VideoDeceptionDataset(
             data_root=args.val_root,
             num_frames=args.num_frames,
             frame_size=(args.frame_height, args.frame_width),
-            audio_length=args.audio_length,
-            sample_rate=args.sample_rate,
-            n_mels=args.n_mels,
             mode='val'
         )
     else:
-        val_dataset = VideoDeceptionDataset(
-            annotation_file=args.val_list,
-            num_frames=args.num_frames,
-            frame_size=(args.frame_height, args.frame_width),
-            audio_length=args.audio_length,
-            sample_rate=args.sample_rate,
-            n_mels=args.n_mels,
-            mode='val'
-        )
+        print("⚠️ No validation data provided.")
+        val_dataset = None
+    # if args.train_root:
+    #     train_dataset = VideoDeceptionDataset(
+    #         csv_file=args.train_list,
+    #         data_root=args.train_root,
+    #         num_frames=args.num_frames,
+    #         frame_size=(args.frame_height, args.frame_width),
+    #         audio_length=args.audio_length,
+    #         sample_rate=args.sample_rate,
+    #         n_mels=args.n_mels,
+    #         mode='train'
+    #     )
+    # else:
+    #     train_dataset = VideoDeceptionDataset(
+    #         annotation_file=args.train_list,
+    #         num_frames=args.num_frames,
+    #         frame_size=(args.frame_height, args.frame_width),
+    #         audio_length=args.audio_length,
+    #         sample_rate=args.sample_rate,
+    #         n_mels=args.n_mels,
+    #         mode='train'
+    #     )
+
+    # if args.val_root:
+    #     val_dataset = VideoDeceptionDataset(
+    #         csv_file=args.train_list,
+    #         data_root=args.val_root,
+    #         num_frames=args.num_frames,
+    #         frame_size=(args.frame_height, args.frame_width),
+    #         audio_length=args.audio_length,
+    #         sample_rate=args.sample_rate,
+    #         n_mels=args.n_mels,
+    #         mode='val'
+    #     )
+    # else:
+    #     val_dataset = VideoDeceptionDataset(
+    #         annotation_file=args.val_list,
+    #         num_frames=args.num_frames,
+    #         frame_size=(args.frame_height, args.frame_width),
+    #         audio_length=args.audio_length,
+    #         sample_rate=args.sample_rate,
+    #         n_mels=args.n_mels,
+    #         mode='val'
+    #     )
 
     print("============= Class Weight ==========")
     class_weights = compute_class_weights(train_dataset)
     print(class_weights)
-    # train_sampler = create_balanced_sampler(train_dataset)
    
     # Create dataloaders
     train_loader = DataLoader(
@@ -1430,10 +1567,19 @@ def main(args):
     # Add device to args for model
     args.device = device
 
-    # Create model
-    # model = LightweightFusionModule(args)
-    model = MinimalFusionModule(args)
-    # model = FusionModule(args)
+    print(f"\n  Creating Model: {args.model_arch.upper()}")
+
+    if args.model_arch == 'normal':
+        # The robust MULT transformer model (Best for 100k data)
+        model = FusionModule(args)
+    elif args.model_arch == 'lite':
+        # The intermediate model
+        model = LightweightFusionModule(args)
+    elif args.model_arch == 'minimal':
+        # The very small model (Best for debugging/small data)
+        model = MinimalFusionModule(args)
+    else:
+        raise ValueError(f"❌ Unknown model architecture: {args.model_arch}")
 
     ###### FREEZING MODEL
     for param in model.audio_model.parameters():
@@ -1642,7 +1788,6 @@ if __name__ == "__main__":
     install_system_dependencies()
 
     try:
-        # Force print immediately to prove code started
         print("🚀 SCRIPT STARTED SUCCESSFULLY", flush=True)
             
         parser = argparse.ArgumentParser(description="Multimodal Deception Detection")
@@ -1662,10 +1807,12 @@ if __name__ == "__main__":
                             help='Training data root directory')
         parser.add_argument('--val_root', type=str, default=None,
                             help='Validation data root directory')
-        parser.add_argument('--train_list', type=str, default=None,
-                            help='Training annotation file')
-        parser.add_argument('--val_list', type=str, default=None,
-                            help='Validation annotation file')
+    
+        # local CSV usage
+        parser.add_argument('--train_list', type=str, default='sample/train/output/train.csv',
+                            help='Path to the training CSV file generated previously')
+        parser.add_argument('--val_list', type=str, default='sample/train/output/validation.csv',
+                            help='Path to the validation CSV file generated previously')
 
         # Video/Audio parameters
         parser.add_argument('--num_frames', type=int, default=64,
@@ -1681,7 +1828,9 @@ if __name__ == "__main__":
         parser.add_argument('--n_mels', type=int, default=128,
                             help='Number of mel frequency bins')
 
-        # Model parameters (from your original code)
+        # Model parameters 
+        parser.add_argument('--model_arch', type=str, default='normal',
+                            help='3 different archs: minimal, lite, normal')
         parser.add_argument('--modalities', type=str, default='vaf',
                             help='Modalities: v=visual, a=audio, f=face')
         parser.add_argument('--v_dim', type=int, default=64) #64
@@ -1729,7 +1878,6 @@ if __name__ == "__main__":
         #     parser.error("Either --val_root or --val_list must be provided")
 
     except Exception as e:
-        # This block catches ANY crash and prints it to your local terminal
         print("\n\n❌ ❌ CRITICAL FAILURE ❌ ❌", flush=True)
         print(str(e), flush=True)
         print(traceback.format_exc(), flush=True)

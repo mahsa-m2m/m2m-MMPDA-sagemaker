@@ -1,3 +1,4 @@
+Scanning dataset/video/truthful/...
 Found 53784 files in dataset/video/truthful/
 Scanning dataset/video/deceptive/...
 Found 44356 files in dataset/video/deceptive/
@@ -5,8 +6,11 @@ Total dataset size: 98140
 ------------------------------
 SPLIT SUMMARY
 ------------------------------
-Training Set (Balanced): 0 rows
-Series([], Name: count, dtype: int64)
+Training Set (Balanced): 62098 rows
+label
+deceptive    31049
+truthful     31049
+Name: count, dtype: int64
 ------------------------------
 Validation Set: 14721 rows
 label
