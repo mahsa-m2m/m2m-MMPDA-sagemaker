@@ -143,14 +143,6 @@ class VideoDeceptionDataset(Dataset):
             self._load_from_directory(data_root)
         else:
             raise ValueError("Either csv_file or data_root must be provided")
-        # # Load from directory structure
-        # if data_root is not None:
-        #     self._load_from_directory(data_root)
-        # # Load from annotation file
-        # elif annotation_file is not None:
-        #     self._load_from_annotation(annotation_file)
-        # else:
-        #     raise ValueError("Either data_root or annotation_file must be provided")
 
     def _init_mediapipe(self):
         """
@@ -178,69 +170,6 @@ class VideoDeceptionDataset(Dataset):
             self.face_mesh = None
             self.face_mesh_initialized = False
     
-    # def _load_from_csv(self, csv_file):
-    #     """
-    #     Load paths and labels from the CSV generated in the previous step.
-    #     Format expected: [file_path, label_string]
-    #     """
-    #     print(f" Loading dataset from CSV: {csv_file}")
-        
-    #     # Mapping string labels to integers
-    #     label_map = {
-    #         'truthful': 0, 
-    #         'deceptive': 1, 
-    #         'truth': 0, 
-    #         'lie': 1,
-    #         '0': 0,
-    #         '1': 1
-    #     }
-
-    #     # Read CSV using Pandas (header=None because your previous script set header=False)
-    #     try:
-    #         df = pd.read_csv(csv_file, header=None)
-            
-    #         # Check if there is a header row accidentally
-    #         first_val = str(df.iloc[0, 0]).lower()
-    #         if 'path' in first_val or 'file' in first_val:
-    #             df = pd.read_csv(csv_file) # Reload with header detected
-    #             # Rename columns for consistency
-    #             df.columns = ['path', 'label']
-    #         else:
-    #             # Rename columns manually
-    #             df.columns = ['path', 'label']
-
-    #     except Exception as e:
-    #         print(f"❌ Error reading CSV with Pandas: {e}")
-    #         return
-
-    #     valid_count = 0
-    #     missing_count = 0
-
-    #     for index, row in df.iterrows():
-    #         video_path = str(row['path']).strip()
-    #         label_raw = str(row['label']).strip().lower()
-
-    #         # Map label
-    #         if label_raw in label_map:
-    #             label = label_map[label_raw]
-    #         else:
-    #             print(f"⚠️ Unknown label '{label_raw}' in row {index}. Skipping.")
-    #             continue
-
-    #         # Verify file exists
-    #         if os.path.exists(video_path):
-    #             self.video_list.append(video_path)
-    #             self.labels.append(label)
-    #             valid_count += 1
-    #         else:
-    #             # print(f"⚠️ File not found: {video_path}")
-    #             missing_count += 1
-
-    #     print(f"✅ Loaded {valid_count} videos from CSV.")
-    #     if missing_count > 0:
-    #         print(f"⚠️ Skipped {missing_count} missing files.")
-    #     print(f"   Truthful: {self.labels.count(0)}")
-    #     print(f"   Deceptive: {self.labels.count(1)}")
     def _load_from_csv(self, csv_file, data_root):
             """
             Load paths and labels from CSV, converting S3 paths to local container paths.
