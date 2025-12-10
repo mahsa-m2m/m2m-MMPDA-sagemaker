@@ -13,8 +13,8 @@ import config
 from preprocessing import InferencePreprocessor
 
 try:
-    # from models_comp.fusion_model import MinimalFusionModule
-    from models_comp.fusion_model import FusionModule
+    from models_comp.fusion_model import MinimalFusionModule
+    # from models_comp.fusion_model import FusionModule
 except ImportError as e:
     print(f"❌ Import Error: {e}")
     raise
@@ -71,8 +71,8 @@ class FusionInferenceService:
         if not hasattr(config.MODEL_ARGS, 'attn_mask'):
             config.MODEL_ARGS.attn_mask = None
         
-        # self.model = MinimalFusionModule(config.MODEL_ARGS)
-        self.model = FusionModule(config.MODEL_ARGS)
+        self.model = MinimalFusionModule(config.MODEL_ARGS)
+        # self.model = FusionModule(config.MODEL_ARGS)
         
         try:
             checkpoint = torch.load(config.MODEL_WEIGHTS_PATH, map_location=config.DEVICE)
@@ -120,13 +120,13 @@ class FusionInferenceService:
         results = []
         print(f"🔄 Processing {len(video_paths)} videos in batches of {batch_size}...")
 
-        total_script_start = time.perf_counter()
+        # total_script_start = time.perf_counter()
 
         with torch.no_grad():
             for batch_idx, batch_data in enumerate(loader):
                 if batch_data is None: continue # Skip empty batches
                 
-                cpu_times = batch_data['cpu_time'].numpy().tolist() 
+                # cpu_times = batch_data['cpu_time'].numpy().tolist() 
                 paths = batch_data['video_path']
 
                 # 1. Move Batch to GPU
@@ -138,7 +138,7 @@ class FusionInferenceService:
                 paths = batch_data['video_path']
 
                 if config.DEVICE == 'cuda': torch.cuda.synchronize()
-                t_gpu_start = time.perf_counter()
+                # t_gpu_start = time.perf_counter()
 
                 # 2. Batch Inference (GPU processes N videos at once)
                 outputs = self.model(
@@ -149,12 +149,12 @@ class FusionInferenceService:
                 )
 
                 if config.DEVICE == 'cuda': torch.cuda.synchronize()
-                t_gpu_end = time.perf_counter()
+                # t_gpu_end = time.perf_counter()
 
-                # Calculate GPU time per video (Amortized)
-                # We divide the total batch time by the number of videos in the batch
-                total_batch_gpu_time = t_gpu_end - t_gpu_start
-                avg_gpu_per_video = total_batch_gpu_time / current_batch_len
+                # # Calculate GPU time per video
+                # # We divide the total batch time by the number of videos in the batch
+                # total_batch_gpu_time = t_gpu_end - t_gpu_start
+                # avg_gpu_per_video = total_batch_gpu_time / current_batch_len
                 
                 
                 logits = outputs[0] # [Batch_Size, Num_Classes]
@@ -164,22 +164,22 @@ class FusionInferenceService:
                 for i, path in enumerate(paths):
                     p_list = probs[i].tolist()
 
-                    # Individual CPU time + Average GPU time
-                    video_cpu_time = cpu_times[i]
-                    video_total_time = video_cpu_time + avg_gpu_per_video
+                    # # Individual CPU time + Average GPU time
+                    # video_cpu_time = cpu_times[i]
+                    # video_total_time = video_cpu_time + avg_gpu_per_video
 
                     results.append({
                         "video_path": path,
                         "truthful_prob": p_list[0],
                         "deceptive_prob": p_list[1],
-                        "predicted_label": "Deceptive" if p_list[1] > p_list[0] else "Truthful",
-                        # TIMING DATA
-                        "time_cpu": video_cpu_time,
-                        "time_gpu": avg_gpu_per_video,
-                        "time_total": video_total_time
+                        "predicted_label": "Deceptive" if p_list[1] > p_list[0] else "Truthful"
+                        # # TIMING DATA
+                        # "time_cpu": video_cpu_time,
+                        # "time_gpu": avg_gpu_per_video,
+                        # "time_total": video_total_time
                     })
-        total_script_end = time.perf_counter()
-        print(f"🏁 Total Wall-Clock Time for all videos: {total_script_end - total_script_start:.2f}s")
+        # total_script_end = time.perf_counter()
+        # print(f"🏁 Total Wall-Clock Time for all videos: {total_script_end - total_script_start:.2f}s")
 
         return results
 
@@ -187,20 +187,22 @@ if __name__ == "__main__":
     service = FusionInferenceService()
     
     # Example: List of 100 videos
-    video_list = ["/home/sagemaker-user/mahsa-m2m-MMPDA-sagemaker/sample/W_453_class_Truth_301.mkv", "/home/sagemaker-user/mahsa-m2m-MMPDA-sagemaker/sample/TTTT_433_class_Truth_67.mkv"] 
+    video_list = ["/home/sagemaker-user/mahsa-m2m-MMPDA-sagemaker/sample/W_453_class_Truth_301.mkv", "/home/sagemaker-user/mahsa-m2m-MMPDA-sagemaker/sample/TTTT_432_class_Deceptive_42.mkv"] 
     
     # Run in batch mode
     batch_results = service.predict_batch(video_list, batch_size=4, num_workers=4)
     print(f"Processed {len(batch_results)} videos.")
 
     # Print formatted results
-    print(f"{'VIDEO NAME':<40} | {'LABEL':<10} | {'CPU(s)':<8} | {'GPU(s)':<8} | {'TOTAL(s)':<8}")
+    # print(f"{'VIDEO NAME':<40} | {'LABEL':<10} | {'CPU(s)':<8} | {'GPU(s)':<8} | {'TOTAL(s)':<8}")
+    print(f"{'VIDEO NAME':<40} | {'LABEL':<10} | {'DECEPTIVE SCORE':<8} | {'TRUTHFUL SCORE':<8}")
     print("-" * 90)
 
     for res in batch_results:
         vid_name = os.path.basename(res['video_path'])
+
         print(f"{vid_name:<40} | {res['predicted_label']:<10} | "
-              f"{res['time_cpu']:.4f}   | {res['time_gpu']:.4f}   | {res['time_total']:.4f}")
+              f"{res['deceptive_prob']:.4f}          |  {res['truthful_prob']:.4f} ")
 
     # for res in batch_results:
     #     print(f"[{res['predicted_label']}] {os.path.basename(res['video_path'])} "

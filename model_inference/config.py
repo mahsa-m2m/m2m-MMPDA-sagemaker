@@ -3,8 +3,8 @@ from types import SimpleNamespace
 
 # --- PATHS ---
 # MODEL_WEIGHTS_PATH = os.getenv("MODEL_WEIGHTS_PATH", "model/best_model_loss_acc_72.pt")
-MODEL_WEIGHTS_PATH = "/home/sagemaker-user/mahsa-m2m-MMPDA-sagemaker/model/best_model_loss_ep3_acc65.pt"
-DEVICE = "cuda" #if os.getenv("USE_GPU", "false").lower() == "true" else "cpu"
+MODEL_WEIGHTS_PATH = "/home/sagemaker-user/mahsa-m2m-MMPDA-sagemaker/model/best_model_loss_acc_72.pt"
+DEVICE = "cuda" if os.getenv("USE_GPU", "false").lower() == "true" else "cpu"
 
 # --- DATA PROCESSING CONFIG ---
 NUM_FRAMES = 64 # T
