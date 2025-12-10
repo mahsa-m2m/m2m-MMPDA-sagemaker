@@ -89,10 +89,9 @@ class FusionInferenceService:
         self.model.to(config.DEVICE)
         self.model.eval()
 
-    def predict_single(self, video_path):
-        """Legacy method for single video"""
-        # (Your existing code here...)
-        pass
+    # def predict_single(self, video_path):
+    #     """ single video"""
+    #     pass
 
     def predict_batch(self, video_paths, batch_size=8, num_workers=4):
         """
@@ -187,7 +186,7 @@ if __name__ == "__main__":
     service = FusionInferenceService()
     
     # Example: List of 100 videos
-    video_list = ["/home/sagemaker-user/mahsa-m2m-MMPDA-sagemaker/sample/W_453_class_Truth_301.mkv", "/home/sagemaker-user/mahsa-m2m-MMPDA-sagemaker/sample/TTTT_432_class_Deceptive_42.mkv"] 
+    video_list = ["/home/sagemaker-user/mahsa-m2m-MMPDA-sagemaker/sample/TTTT_432_class_Deceptive_42.mkv"]#, "/home/sagemaker-user/mahsa-m2m-MMPDA-sagemaker/sample/TTTT_432_class_Deceptive_42.mkv"] 
     
     # Run in batch mode
     batch_results = service.predict_batch(video_list, batch_size=4, num_workers=4)
