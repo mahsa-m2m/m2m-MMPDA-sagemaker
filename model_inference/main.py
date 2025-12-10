@@ -187,7 +187,7 @@ if __name__ == "__main__":
     service = FusionInferenceService()
     
     # Example: List of 100 videos
-    video_list = ["/home/sagemaker-user/mahsa-m2m-MMPDA-sagemaker/sample/W_453_class_Truth_301.mkv"]#, "/home/sagemaker-user/mahsa-m2m-MMPDA-sagemaker/sample/TTTT_433_class_Truth_67.mkv"] 
+    video_list = ["/home/sagemaker-user/mahsa-m2m-MMPDA-sagemaker/sample/W_453_class_Truth_301.mkv", "/home/sagemaker-user/mahsa-m2m-MMPDA-sagemaker/sample/TTTT_433_class_Truth_67.mkv"] 
     
     # Run in batch mode
     batch_results = service.predict_batch(video_list, batch_size=4, num_workers=4)

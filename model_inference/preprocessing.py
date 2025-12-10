@@ -104,22 +104,68 @@ class InferencePreprocessor:
 
     # --- HELPER FUNCTIONS ---
 
-    def _extract_audio(self, video_path):
-        """Extracts audio with silence fallback"""
-        temp_wav = None
-        try:
-            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tf:
-                temp_wav = tf.name
+    # def _extract_audio(self, video_path):
+    #     """Extracts audio with silence fallback"""
+    #     temp_wav = None
+    #     try:
+    #         with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tf:
+    #             temp_wav = tf.name
             
-            cmd = ['ffmpeg', '-i', video_path, '-vn', '-acodec', 'pcm_s16le',
-                   '-ar', str(config.SAMPLE_RATE), '-ac', '1', '-y', temp_wav]
-            subprocess.run(cmd, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL, check=True)
+    #         cmd = ['ffmpeg', '-i', video_path, '-vn', '-acodec', 'pcm_s16le',
+    #                '-ar', str(config.SAMPLE_RATE), '-ac', '1', '-y', temp_wav]
+    #         subprocess.run(cmd, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL, check=True)
 
-            if os.path.exists(temp_wav) and os.path.getsize(temp_wav) > 0:
-                waveform, sr = torchaudio.load(temp_wav)
-            else:
+    #         if os.path.exists(temp_wav) and os.path.getsize(temp_wav) > 0:
+    #             waveform, sr = torchaudio.load(temp_wav)
+    #         else:
+    #             raise ValueError("Empty audio")
+
+    #         if waveform.shape[1] < config.AUDIO_LENGTH:
+    #             waveform = torch.nn.functional.pad(waveform, (0, config.AUDIO_LENGTH - waveform.shape[1]))
+    #         else:
+    #             waveform = waveform[:, :config.AUDIO_LENGTH]
+
+    #         mel_spec = self.mel_transform(waveform)
+    #         mel_spec = mel_spec.repeat(3, 1, 1)
+
+    #         if os.path.exists(temp_wav): os.remove(temp_wav)
+    #         return waveform.squeeze(0).numpy(), mel_spec.numpy()
+
+    #     except Exception as e:
+    #         if temp_wav and os.path.exists(temp_wav): os.remove(temp_wav)
+    #         return self._get_silent_audio()
+    def _extract_audio(self, video_path):
+        """Extracts audio directly to memory (No Disk I/O)"""
+        try:
+            # ffmpeg command to pipe audio as WAV to stdout
+            cmd = [
+                'ffmpeg', 
+                '-i', video_path, 
+                '-vn',               # No video
+                '-f', 'wav',         # Format wav
+                '-acodec', 'pcm_s16le', 
+                '-ar', str(config.SAMPLE_RATE), 
+                '-ac', '1',          # Mono
+                '-loglevel', 'error', # Quieter output
+                'pipe:1'             # Output to stdout
+            ]
+            
+            # Run command and capture output in memory
+            process = subprocess.run(
+                cmd, 
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.PIPE,
+                check=True
+            )
+            
+            # Read from memory buffer (No disk latency)
+            memory_file = io.BytesIO(process.stdout)
+            waveform, sr = torchaudio.load(memory_file)
+
+            if waveform.shape[1] == 0:
                 raise ValueError("Empty audio")
 
+            # Exact same padding logic as before
             if waveform.shape[1] < config.AUDIO_LENGTH:
                 waveform = torch.nn.functional.pad(waveform, (0, config.AUDIO_LENGTH - waveform.shape[1]))
             else:
@@ -128,11 +174,10 @@ class InferencePreprocessor:
             mel_spec = self.mel_transform(waveform)
             mel_spec = mel_spec.repeat(3, 1, 1)
 
-            if os.path.exists(temp_wav): os.remove(temp_wav)
             return waveform.squeeze(0).numpy(), mel_spec.numpy()
 
         except Exception as e:
-            if temp_wav and os.path.exists(temp_wav): os.remove(temp_wav)
+            # Fallback to silence if audio fails
             return self._get_silent_audio()
 
     def _get_silent_audio(self):
@@ -141,6 +186,58 @@ class InferencePreprocessor:
         silent_mel = np.zeros((3, config.N_MELS, n_time_steps), dtype=np.float32)
         return silent_wave, silent_mel
 
+    # def _sample_frames(self, video_path):
+    #     cap = cv2.VideoCapture(video_path)
+    #     if not cap.isOpened():
+    #         print(f"Error opening video: {video_path}")
+    #         return np.zeros((config.NUM_FRAMES, config.FRAME_SIZE[0], config.FRAME_SIZE[1], 3), dtype=np.uint8)
+
+    #     # Get metadata
+    #     fps = cap.get(cv2.CAP_PROP_FPS)
+    #     total_frames_in_video = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    #     if fps <= 0: fps = 25.0
+        
+    #     # Determine which frame indices we need
+    #     duration = total_frames_in_video / fps
+    #     timestamps = np.linspace(0, max(0, duration - 0.5), config.NUM_FRAMES)
+    #     target_indices = [int(t * fps) for t in timestamps]
+        
+    #     # Optimize: Sort and remove duplicates to read in order
+    #     target_indices = sorted(list(set(target_indices)))
+        
+    #     frames = []
+    #     current_idx = 0
+        
+    #     # --- SEQUENTIAL READ (No Seeking Errors) ---
+    #     while True:
+    #         ret, frame = cap.read()
+    #         if not ret: 
+    #             break # End of video
+            
+    #         # If this is a frame we want, keep it
+    #         if current_idx in target_indices:
+    #             frame = cv2.resize(frame, (config.FRAME_SIZE[1], config.FRAME_SIZE[0]))
+    #             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    #             frames.append(frame)
+            
+    #         current_idx += 1
+            
+    #         # Optimization: Stop reading if we passed the last frame we need
+    #         if target_indices and current_idx > target_indices[-1]:
+    #             break
+
+    #     cap.release()
+
+    #     # Handle edge cases (padding)
+    #     if len(frames) == 0:
+    #          return np.zeros((config.NUM_FRAMES, config.FRAME_SIZE[0], config.FRAME_SIZE[1], 3), dtype=np.uint8)
+
+    #     # If we missed some frames (due to rounding or bad metadata), duplicate the last one
+    #     while len(frames) < config.NUM_FRAMES:
+    #         frames.append(frames[-1])
+            
+    #     # If we got too many (due to duplicate indices logic), trim
+    #     return np.array(frames[:config.NUM_FRAMES], dtype=np.uint8)
     def _sample_frames(self, video_path):
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
@@ -152,25 +249,25 @@ class InferencePreprocessor:
         total_frames_in_video = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         if fps <= 0: fps = 25.0
         
-        # Determine which frame indices we need
+        # Calculate exact timestamps needed
         duration = total_frames_in_video / fps
         timestamps = np.linspace(0, max(0, duration - 0.5), config.NUM_FRAMES)
-        target_indices = [int(t * fps) for t in timestamps]
         
-        # Optimize: Sort and remove duplicates to read in order
-        target_indices = sorted(list(set(target_indices)))
+        # Convert timestamps to frame indices and sort them
+        target_indices = sorted(list(set([int(t * fps) for t in timestamps])))
         
         frames = []
         current_idx = 0
         
-        # --- SEQUENTIAL READ (No Seeking Errors) ---
+        # Fast Sequential Read
         while True:
             ret, frame = cap.read()
             if not ret: 
                 break # End of video
             
-            # If this is a frame we want, keep it
+            # Only process if this is a frame we need
             if current_idx in target_indices:
+                # Resize and Color Convert (Standard preprocessing)
                 frame = cv2.resize(frame, (config.FRAME_SIZE[1], config.FRAME_SIZE[0]))
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 frames.append(frame)
@@ -187,11 +284,10 @@ class InferencePreprocessor:
         if len(frames) == 0:
              return np.zeros((config.NUM_FRAMES, config.FRAME_SIZE[0], config.FRAME_SIZE[1], 3), dtype=np.uint8)
 
-        # If we missed some frames (due to rounding or bad metadata), duplicate the last one
+        # Duplicate last frame if we are missing any (due to video length mismatches)
         while len(frames) < config.NUM_FRAMES:
             frames.append(frames[-1])
             
-        # If we got too many (due to duplicate indices logic), trim
         return np.array(frames[:config.NUM_FRAMES], dtype=np.uint8)
 
     def _compute_features_from_landmarks(self, landmarks, image_shape):
