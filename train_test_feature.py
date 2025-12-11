@@ -994,78 +994,6 @@ class VideoDeceptionDataset(Dataset):
     def __len__(self):
         return len(self.video_list)
 
-    # def __getitem__(self, idx):
-    #     video_path = self.video_list[idx]
-    #     label = self.labels[idx]
-
-    #     # Enable verbose debugging for first 2 videos
-    #     if idx < 2:
-    #         print(f"\n\n{'#'*70}")
-    #         print(f"# PROCESSING SAMPLE {idx}")
-    #         print(f"# Video: {os.path.basename(video_path)}")
-    #         print(f"{'#'*70}\n")
-        
-    #     # Extract frames with debugging
-       
-
-    #     try:
-    #         frames = self._sample_frames(video_path)
-        
-    #         if frames is None  or frames.size == 0:
-    #             print(f"❌ Frames is None, creating dummy frames")
-    #             frames = np.zeros((self.num_frames, self.frame_size[0], self.frame_size[1], 3), dtype=np.uint8)
-            
-    #         # Extract behavioral features with debugging
-    #         behavioral_features = self._extract_behavioral_features(frames)
-
-            
-    #         # Extract face frames
-    #         if frames is None or frames.size == 0:
-    #             frames = np.zeros((self.num_frames, self.frame_size[0], self.frame_size[1], 3), dtype=np.uint8)
-
-    #         # Extract audio
-    #         audio_wave, audio_mel = self._extract_audio(video_path)
-
-    #         # Extract behavioral features (OpenFace + Affect)
-    #         # behavioral_features = self._extract_behavioral_features(frames)
-
-    #         # 🔍 Validate behavioral features shape
-    #         if behavioral_features.shape != (self.num_frames, 64): #50
-    #             print(f"⚠️ Invalid behavioral features shape {behavioral_features.shape} for {os.path.basename(video_path)}")
-    #             behavioral_features = np.zeros((self.num_frames, 64), dtype=np.float32) #50
-            
-    #         # Convert face frames to tensor: (T, H, W, C) -> (C, T, H, W) for the model
-    #         frames = torch.from_numpy(frames).permute(3, 0, 1, 2).float()
-    #         # Normalize to [-1, 1]
-    #         frames = (frames / 255.0 - 0.5) * 2.0
-
-    #         # 🔍 DEBUG: Print shapes
-    #         if idx % 50 == 0:  # Print for first sample
-    #             print(f"\n🔍 Info for video: {os.path.basename(video_path)}")
-    #             print(f"  Frames shape: {frames.shape}")
-    #             print(f"  Behavioral features shape: {behavioral_features.shape}")
-    #             print(f"  Behavioral features sample: {behavioral_features[0][:10]}")  # First 10 features
-    #             print(f"  Non-zero features: {np.count_nonzero(behavioral_features)}/{behavioral_features.size}")
-            
-    #         # Convert behavioral features to tensor
-    #         behavioral_features = torch.from_numpy(behavioral_features).float()
-            
-    #         sample = {
-    #             'vision_behaviour': behavioral_features,  # (T=64, 64)
-    #             'vision_face': frames,  # (C=3, T=64, H=160, W=160)
-    #             'audio_mel': audio_mel,  # (C=3, n_mels=128, time)
-    #             'audio_wave': audio_wave,  # (audio_length,)
-    #             'label': torch.tensor(label, dtype=torch.long),
-    #             'videoname': os.path.basename(video_path)
-    #         }
-
-    #         return sample
-
-    #     except Exception as e:
-    #         print(f"❌ Error processing {os.path.basename(video_path)}: {str(e)}")
-    #         # Return a safe dummy sample
-    #         return self._get_dummy_sample(label, video_path)
-
     def __getitem__(self, idx):
         video_path = self.video_list[idx]
         label = self.labels[idx]
@@ -1362,8 +1290,6 @@ def compute_class_weights(dataset):
 
 def main(args):
 
-    # install_ffmpeg()
-
     # Setup
     setup_seed(42)
     device = torch.device(f'cuda:{args.gpu}' if torch.cuda.is_available() else 'cpu')
@@ -1372,8 +1298,6 @@ def main(args):
     # os.makedirs(args.log, exist_ok=True)
     # log_file = open(os.path.join(args.log, 'training_log.txt'), 'a')  # 'a' for resume
     log_file = open(os.path.join(LOG_DIR, 'training_log.txt'), 'a', buffering=1)
-    
-
 
     print(f"Using device: {device}")
     print(f"Arguments: {args}")
