@@ -2354,7 +2354,6 @@ class VideoDeceptionDataset(Dataset):
             print(f"❌ Error processing {os.path.basename(video_path)}: {str(e)}")
             return self._get_dummy_sample(label, video_path)
 
-
 class FocalLoss(nn.Module):
     """
     Focal Loss for handling class imbalance
