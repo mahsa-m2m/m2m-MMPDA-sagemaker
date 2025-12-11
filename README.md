@@ -29,4 +29,21 @@ python train_test_feature.py --train_list sample/train.csv --val_list sample/val
 ```
 
 ### 💡 4. Inference
-(Will be added)
+To do inference, run `model_inference/main.py`. It gets single/batch videos.
+
+Set the video path in => `main.py`
+
+Set the model path and config in => `config.py`
+```
+python model_inference/main.py
+```
+### 🔎🧠 5. Explainability
+Generate and save heatmaps on the video frames to show what features the model has learned.
+
+Set the video path in => `visualize_qualitative.py`
+
+Set the model path and config in => `explainer.py`
+```
+python model_explain/visualize_qualitative.py
+```
+The output is saved as `explainability_result.avi`. 
