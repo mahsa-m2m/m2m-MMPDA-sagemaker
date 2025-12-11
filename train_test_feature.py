@@ -1108,9 +1108,9 @@ class VideoDeceptionDataset(Dataset):
         self.landmarker = None
         ## --------------------------- ##
 
-        self.face_mesh = None
-        self.face_mesh_initialized = False
-        self.mp_face_mesh = mp.solutions.face_mesh
+        # self.face_mesh = None
+        # self.face_mesh_initialized = False
+        # self.mp_face_mesh = mp.solutions.face_mesh
 
          # --- LOAD DATA LOGIC ---
         if csv_file is not None and os.path.exists(csv_file):
@@ -1935,305 +1935,305 @@ class VideoDeceptionDataset(Dataset):
 
         return np.array(final_crops), np.array(final_features)
 
-    def _compute_features_from_landmarks(self, landmarks, image_shape):
-        """
-        Compute 50-dimensional feature vector from MediaPipe 478 face landmarks:
+    # def _compute_features_from_landmarks(self, landmarks, image_shape):
+    #     """
+    #     Compute 50-dimensional feature vector from MediaPipe 478 face landmarks:
         
-        Feature breakdown:
-        [0:35]   - Action Units (35)
-        [35:43]  - Gaze features (8)
-        [43:48]  - Expression features (5)
-        [48:50]  - Valence/Arousal (2)
-        """
-        h, w = image_shape[:2]
+    #     Feature breakdown:
+    #     [0:35]   - Action Units (35)
+    #     [35:43]  - Gaze features (8)
+    #     [43:48]  - Expression features (5)
+    #     [48:50]  - Valence/Arousal (2)
+    #     """
+    #     h, w = image_shape[:2]
         
-        # Convert landmarks to numpy array (x, y, z coordinates normalized)
-        points = np.array([[lm.x * w, lm.y * h, lm.z * w] for lm in landmarks])
+    #     # Convert landmarks to numpy array (x, y, z coordinates normalized)
+    #     points = np.array([[lm.x * w, lm.y * h, lm.z * w] for lm in landmarks])
         
-        features = []
+    #     features = []
         
-        # ============================================================
-        # PART 1: ACTION UNITS (35 features)
-        # ============================================================
+    #     # ============================================================
+    #     # PART 1: ACTION UNITS (35 features)
+    #     # ============================================================
         
-        # --- Eyes (12 features) ---
-        # AU5 (Upper Lid Raiser), AU7 (Lid Tightener), AU43 (Eyes Closed)
-        left_eye_openness = self._eye_aspect_ratio(points, side='left')
-        right_eye_openness = self._eye_aspect_ratio(points, side='right')
+    #     # --- Eyes (12 features) ---
+    #     # AU5 (Upper Lid Raiser), AU7 (Lid Tightener), AU43 (Eyes Closed)
+    #     left_eye_openness = self._eye_aspect_ratio(points, side='left')
+    #     right_eye_openness = self._eye_aspect_ratio(points, side='right')
         
-        # Eye widths
-        left_eye_width = np.linalg.norm(points[33] - points[133])
-        right_eye_width = np.linalg.norm(points[362] - points[263])
+    #     # Eye widths
+    #     left_eye_width = np.linalg.norm(points[33] - points[133])
+    #     right_eye_width = np.linalg.norm(points[362] - points[263])
         
-        # Inter-eye distance
-        eye_distance = np.linalg.norm(points[33] - points[263])
+    #     # Inter-eye distance
+    #     eye_distance = np.linalg.norm(points[33] - points[263])
         
-        # Upper/lower lid positions
-        left_upper_lid = np.linalg.norm(points[159] - points[145])
-        right_upper_lid = np.linalg.norm(points[386] - points[374])
-        left_lower_lid = np.linalg.norm(points[145] - points[153])
-        right_lower_lid = np.linalg.norm(points[374] - points[380])
+    #     # Upper/lower lid positions
+    #     left_upper_lid = np.linalg.norm(points[159] - points[145])
+    #     right_upper_lid = np.linalg.norm(points[386] - points[374])
+    #     left_lower_lid = np.linalg.norm(points[145] - points[153])
+    #     right_lower_lid = np.linalg.norm(points[374] - points[380])
         
-        # Eye squint/tightening
-        left_eye_squint = np.linalg.norm(points[159] - points[153])
-        right_eye_squint = np.linalg.norm(points[386] - points[380])
+    #     # Eye squint/tightening
+    #     left_eye_squint = np.linalg.norm(points[159] - points[153])
+    #     right_eye_squint = np.linalg.norm(points[386] - points[380])
         
-        # Eye symmetry
-        eye_symmetry = abs(left_eye_width - right_eye_width) / (eye_distance + 1e-6)
+    #     # Eye symmetry
+    #     eye_symmetry = abs(left_eye_width - right_eye_width) / (eye_distance + 1e-6)
         
-        features.extend([
-            left_eye_openness, right_eye_openness, left_eye_width, right_eye_width,
-            eye_distance, left_upper_lid, right_upper_lid, left_lower_lid, right_lower_lid,
-            left_eye_squint, right_eye_squint, eye_symmetry
-        ])  # 12 features
+    #     features.extend([
+    #         left_eye_openness, right_eye_openness, left_eye_width, right_eye_width,
+    #         eye_distance, left_upper_lid, right_upper_lid, left_lower_lid, right_lower_lid,
+    #         left_eye_squint, right_eye_squint, eye_symmetry
+    #     ])  # 12 features
         
-        # --- Eyebrows (8 features) ---
-        # AU1 (Inner Brow Raiser), AU2 (Outer Brow Raiser), AU4 (Brow Lowerer)
-        left_brow_height = self._eyebrow_height(points, side='left')
-        right_brow_height = self._eyebrow_height(points, side='right')
+    #     # --- Eyebrows (8 features) ---
+    #     # AU1 (Inner Brow Raiser), AU2 (Outer Brow Raiser), AU4 (Brow Lowerer)
+    #     left_brow_height = self._eyebrow_height(points, side='left')
+    #     right_brow_height = self._eyebrow_height(points, side='right')
         
-        # Inner brow points
-        left_inner_brow = np.linalg.norm(points[70] - points[27])   # Left inner brow to nose bridge
-        right_inner_brow = np.linalg.norm(points[300] - points[27]) # Right inner brow to nose bridge
+    #     # Inner brow points
+    #     left_inner_brow = np.linalg.norm(points[70] - points[27])   # Left inner brow to nose bridge
+    #     right_inner_brow = np.linalg.norm(points[300] - points[27]) # Right inner brow to nose bridge
         
-        # Outer brow points
-        left_outer_brow = np.linalg.norm(points[105] - points[33])  # Left outer brow to eye
-        right_outer_brow = np.linalg.norm(points[334] - points[263]) # Right outer brow to eye
+    #     # Outer brow points
+    #     left_outer_brow = np.linalg.norm(points[105] - points[33])  # Left outer brow to eye
+    #     right_outer_brow = np.linalg.norm(points[334] - points[263]) # Right outer brow to eye
         
-        # Brow distance and angle
-        brow_distance = np.linalg.norm(points[70] - points[300])
-        brow_angle = np.arctan2(points[300][1] - points[70][1], 
-                                points[300][0] - points[70][0])
+    #     # Brow distance and angle
+    #     brow_distance = np.linalg.norm(points[70] - points[300])
+    #     brow_angle = np.arctan2(points[300][1] - points[70][1], 
+    #                             points[300][0] - points[70][0])
         
-        features.extend([
-            left_brow_height, right_brow_height, left_inner_brow, right_inner_brow,
-            left_outer_brow, right_outer_brow, brow_distance, brow_angle
-        ])  # 8 features
+    #     features.extend([
+    #         left_brow_height, right_brow_height, left_inner_brow, right_inner_brow,
+    #         left_outer_brow, right_outer_brow, brow_distance, brow_angle
+    #     ])  # 8 features
         
-        # --- Mouth (10 features) ---
-        # AU10 (Upper Lip Raiser), AU12 (Lip Corner Puller/Smile), AU15 (Lip Corner Depressor)
-        # AU20 (Lip Stretcher), AU23 (Lip Tightener), AU25 (Lips Part), AU26 (Jaw Drop)
-        mouth_aspect_ratio = self._mouth_aspect_ratio(points)
+    #     # --- Mouth (10 features) ---
+    #     # AU10 (Upper Lip Raiser), AU12 (Lip Corner Puller/Smile), AU15 (Lip Corner Depressor)
+    #     # AU20 (Lip Stretcher), AU23 (Lip Tightener), AU25 (Lips Part), AU26 (Jaw Drop)
+    #     mouth_aspect_ratio = self._mouth_aspect_ratio(points)
         
-        # Mouth dimensions
-        mouth_width = np.linalg.norm(points[61] - points[291])
-        mouth_height = np.linalg.norm(points[13] - points[14])
+    #     # Mouth dimensions
+    #     mouth_width = np.linalg.norm(points[61] - points[291])
+    #     mouth_height = np.linalg.norm(points[13] - points[14])
         
-        # Lip positions
-        upper_lip_center = np.linalg.norm(points[0] - points[13])
-        lower_lip_center = np.linalg.norm(points[17] - points[14])
+    #     # Lip positions
+    #     upper_lip_center = np.linalg.norm(points[0] - points[13])
+    #     lower_lip_center = np.linalg.norm(points[17] - points[14])
         
-        # Lip corners
-        left_corner_height = np.linalg.norm(points[61] - points[291]) 
-        right_corner_height = np.linalg.norm(points[291] - points[61])
+    #     # Lip corners
+    #     left_corner_height = np.linalg.norm(points[61] - points[291]) 
+    #     right_corner_height = np.linalg.norm(points[291] - points[61])
         
-        # Mouth opening and lip distance
-        mouth_opening = np.linalg.norm(points[13] - points[14])
-        lip_distance = np.linalg.norm(points[0] - points[17])
+    #     # Mouth opening and lip distance
+    #     mouth_opening = np.linalg.norm(points[13] - points[14])
+    #     lip_distance = np.linalg.norm(points[0] - points[17])
         
-        # Mouth asymmetry
-        left_mouth = np.linalg.norm(points[61] - points[0])
-        right_mouth = np.linalg.norm(points[291] - points[0])
-        mouth_asymmetry = abs(left_mouth - right_mouth) / (mouth_width + 1e-6)
+    #     # Mouth asymmetry
+    #     left_mouth = np.linalg.norm(points[61] - points[0])
+    #     right_mouth = np.linalg.norm(points[291] - points[0])
+    #     mouth_asymmetry = abs(left_mouth - right_mouth) / (mouth_width + 1e-6)
         
-        features.extend([
-            mouth_aspect_ratio, mouth_width, mouth_height, upper_lip_center, lower_lip_center,
-            left_corner_height, right_corner_height, mouth_opening, lip_distance, mouth_asymmetry
-        ])  # 10 features
+    #     features.extend([
+    #         mouth_aspect_ratio, mouth_width, mouth_height, upper_lip_center, lower_lip_center,
+    #         left_corner_height, right_corner_height, mouth_opening, lip_distance, mouth_asymmetry
+    #     ])  # 10 features
         
-        # --- Nose and Cheeks (5 features) ---
-        # AU9 (Nose Wrinkler), AU11 (Nasolabial Deepener)
-        nose_width = np.linalg.norm(points[129] - points[358])
-        nose_tip_height = np.linalg.norm(points[1] - points[2])
+    #     # --- Nose and Cheeks (5 features) ---
+    #     # AU9 (Nose Wrinkler), AU11 (Nasolabial Deepener)
+    #     nose_width = np.linalg.norm(points[129] - points[358])
+    #     nose_tip_height = np.linalg.norm(points[1] - points[2])
         
-        # Nasolabial folds (cheek to mouth)
-        left_nasolabial = np.linalg.norm(points[206] - points[61])
-        right_nasolabial = np.linalg.norm(points[426] - points[291])
+    #     # Nasolabial folds (cheek to mouth)
+    #     left_nasolabial = np.linalg.norm(points[206] - points[61])
+    #     right_nasolabial = np.linalg.norm(points[426] - points[291])
         
-        # Nose to chin
-        nose_to_chin = np.linalg.norm(points[1] - points[152])
+    #     # Nose to chin
+    #     nose_to_chin = np.linalg.norm(points[1] - points[152])
         
-        features.extend([
-            nose_width, nose_tip_height, left_nasolabial, right_nasolabial, nose_to_chin
-        ])  # 5 features
+    #     features.extend([
+    #         nose_width, nose_tip_height, left_nasolabial, right_nasolabial, nose_to_chin
+    #     ])  # 5 features
         
-        # Total AU features: 12 + 8 + 10 + 5 = 35 
+    #     # Total AU features: 12 + 8 + 10 + 5 = 35 
         
-        # ============================================================
-        # PART 2: GAZE FEATURES (8 features)
-        # ============================================================
+    #     # ============================================================
+    #     # PART 2: GAZE FEATURES (8 features)
+    #     # ============================================================
         
-        # Head pose (pitch, yaw, roll)
-        pitch, yaw, roll = self._head_pose(points, w, h)
+    #     # Head pose (pitch, yaw, roll)
+    #     pitch, yaw, roll = self._head_pose(points, w, h)
         
-        # Eye gaze direction (simplified estimation)
-        left_eye_center = (points[33] + points[133]) / 2
-        right_eye_center = (points[362] + points[263]) / 2
-        nose_bridge = points[168]
+    #     # Eye gaze direction (simplified estimation)
+    #     left_eye_center = (points[33] + points[133]) / 2
+    #     right_eye_center = (points[362] + points[263]) / 2
+    #     nose_bridge = points[168]
         
-        # Horizontal and vertical gaze for each eye
-        left_gaze_h = (left_eye_center[0] - nose_bridge[0]) / w
-        left_gaze_v = (left_eye_center[1] - nose_bridge[1]) / h
-        right_gaze_h = (right_eye_center[0] - nose_bridge[0]) / w
-        right_gaze_v = (right_eye_center[1] - nose_bridge[1]) / h
+    #     # Horizontal and vertical gaze for each eye
+    #     left_gaze_h = (left_eye_center[0] - nose_bridge[0]) / w
+    #     left_gaze_v = (left_eye_center[1] - nose_bridge[1]) / h
+    #     right_gaze_h = (right_eye_center[0] - nose_bridge[0]) / w
+    #     right_gaze_v = (right_eye_center[1] - nose_bridge[1]) / h
         
-        # Gaze convergence (measure of focus)
-        gaze_convergence = abs(left_gaze_h - right_gaze_h)
+    #     # Gaze convergence (measure of focus)
+    #     gaze_convergence = abs(left_gaze_h - right_gaze_h)
         
-        features.extend([
-            pitch, yaw, roll,
-            left_gaze_h, left_gaze_v, right_gaze_h, right_gaze_v,
-            gaze_convergence
-        ])  # 8 features
+    #     features.extend([
+    #         pitch, yaw, roll,
+    #         left_gaze_h, left_gaze_v, right_gaze_h, right_gaze_v,
+    #         gaze_convergence
+    #     ])  # 8 features
         
-        # ============================================================
-        # PART 3: EXPRESSION FEATURES (5 features)
-        # ============================================================
+    #     # ============================================================
+    #     # PART 3: EXPRESSION FEATURES (5 features)
+    #     # ============================================================
         
-        # Overall facial symmetry
-        symmetry = self._facial_symmetry(points)
+    #     # Overall facial symmetry
+    #     symmetry = self._facial_symmetry(points)
         
-        # Face dimensions
-        face_width = np.linalg.norm(points[234] - points[454])
-        face_height = np.linalg.norm(points[10] - points[152])
+    #     # Face dimensions
+    #     face_width = np.linalg.norm(points[234] - points[454])
+    #     face_height = np.linalg.norm(points[10] - points[152])
         
-        # Expression activity indicators
-        upper_face_activity = (left_brow_height + right_brow_height) / 2
-        lower_face_activity = mouth_aspect_ratio
+    #     # Expression activity indicators
+    #     upper_face_activity = (left_brow_height + right_brow_height) / 2
+    #     lower_face_activity = mouth_aspect_ratio
         
-        features.extend([
-            symmetry, face_width, face_height, upper_face_activity, lower_face_activity
-        ])  # 5 features
+    #     features.extend([
+    #         symmetry, face_width, face_height, upper_face_activity, lower_face_activity
+    #     ])  # 5 features
         
-        # ============================================================
-        # PART 4: VALENCE/AROUSAL (2 features)
-        # ============================================================
+    #     # ============================================================
+    #     # PART 4: VALENCE/AROUSAL (2 features)
+    #     # ============================================================
         
-        # Valence: positive (smile) vs negative (frown)
-        # Use mouth corner positions relative to face center
-        mouth_corners_avg = (left_mouth + right_mouth) / 2
-        valence = mouth_corners_avg / (face_height + 1e-6)
+    #     # Valence: positive (smile) vs negative (frown)
+    #     # Use mouth corner positions relative to face center
+    #     mouth_corners_avg = (left_mouth + right_mouth) / 2
+    #     valence = mouth_corners_avg / (face_height + 1e-6)
         
-        # Arousal: high (alert, wide eyes) vs low (calm, relaxed)
-        # Combine eye openness and mouth opening
-        arousal = (left_eye_openness + right_eye_openness + mouth_aspect_ratio) / 3.0
+    #     # Arousal: high (alert, wide eyes) vs low (calm, relaxed)
+    #     # Combine eye openness and mouth opening
+    #     arousal = (left_eye_openness + right_eye_openness + mouth_aspect_ratio) / 3.0
         
-        features.extend([valence, arousal])  # 2 features
+    #     features.extend([valence, arousal])  # 2 features
         
-        # ============================================================
-        # FINALIZE
-        # ============================================================
+    #     # ============================================================
+    #     # FINALIZE
+    #     # ============================================================
         
-        features = np.array(features, dtype=np.float32)
+    #     features = np.array(features, dtype=np.float32)
         
-        # Sanity check
-        assert len(features) == 50, f"Expected 50 features, got {len(features)}"
+    #     # Sanity check
+    #     assert len(features) == 50, f"Expected 50 features, got {len(features)}"
         
-        # Clip extreme values
-        features = np.clip(features, -100, 100)
+    #     # Clip extreme values
+    #     features = np.clip(features, -100, 100)
         
-        # Normalize
-        mean = features.mean()
-        std = features.std()
-        if std > 1e-6:
-            features = (features - mean) / std
+    #     # Normalize
+    #     mean = features.mean()
+    #     std = features.std()
+    #     if std > 1e-6:
+    #         features = (features - mean) / std
         
-        return features
+    #     return features
 
-    def _eye_aspect_ratio(self, points, side='left'):
-        """Calculate Eye Aspect Ratio (EAR) for blink detection"""
-        if side == 'left':
-            # Left eye landmarks
-            p1, p2, p3, p4, p5, p6 = 33, 160, 158, 133, 153, 144
-        else:
-            # Right eye landmarks
-            p1, p2, p3, p4, p5, p6 = 362, 385, 387, 263, 373, 380
+    # def _eye_aspect_ratio(self, points, side='left'):
+    #     """Calculate Eye Aspect Ratio (EAR) for blink detection"""
+    #     if side == 'left':
+    #         # Left eye landmarks
+    #         p1, p2, p3, p4, p5, p6 = 33, 160, 158, 133, 153, 144
+    #     else:
+    #         # Right eye landmarks
+    #         p1, p2, p3, p4, p5, p6 = 362, 385, 387, 263, 373, 380
         
-        # Vertical distances
-        v1 = np.linalg.norm(points[p2] - points[p6])
-        v2 = np.linalg.norm(points[p3] - points[p5])
+    #     # Vertical distances
+    #     v1 = np.linalg.norm(points[p2] - points[p6])
+    #     v2 = np.linalg.norm(points[p3] - points[p5])
         
-        # Horizontal distance
-        h = np.linalg.norm(points[p1] - points[p4])
+    #     # Horizontal distance
+    #     h = np.linalg.norm(points[p1] - points[p4])
         
-        # EAR formula
-        ear = (v1 + v2) / (2.0 * h + 1e-6)
-        return ear
+    #     # EAR formula
+    #     ear = (v1 + v2) / (2.0 * h + 1e-6)
+    #     return ear
 
-    def _eyebrow_height(self, points, side='left'):
-        """Calculate eyebrow height relative to eye"""
-        if side == 'left':
-            brow_point = points[70]   # Left eyebrow center
-            eye_point = points[33]    # Left eye inner corner
-        else:
-            brow_point = points[300]  # Right eyebrow center
-            eye_point = points[263]   # Right eye inner corner
+    # def _eyebrow_height(self, points, side='left'):
+    #     """Calculate eyebrow height relative to eye"""
+    #     if side == 'left':
+    #         brow_point = points[70]   # Left eyebrow center
+    #         eye_point = points[33]    # Left eye inner corner
+    #     else:
+    #         brow_point = points[300]  # Right eyebrow center
+    #         eye_point = points[263]   # Right eye inner corner
         
-        height = np.linalg.norm(brow_point - eye_point)
-        return height
+    #     height = np.linalg.norm(brow_point - eye_point)
+    #     return height
 
-    def _mouth_aspect_ratio(self, points):
-        """Calculate Mouth Aspect Ratio (MAR)"""
-        # Upper and lower lip center points
-        upper = points[13]
-        lower = points[14]
+    # def _mouth_aspect_ratio(self, points):
+    #     """Calculate Mouth Aspect Ratio (MAR)"""
+    #     # Upper and lower lip center points
+    #     upper = points[13]
+    #     lower = points[14]
         
-        # Left and right mouth corners
-        left = points[61]
-        right = points[291]
+    #     # Left and right mouth corners
+    #     left = points[61]
+    #     right = points[291]
         
-        # Vertical distance
-        v = np.linalg.norm(upper - lower)
+    #     # Vertical distance
+    #     v = np.linalg.norm(upper - lower)
         
-        # Horizontal distance
-        h = np.linalg.norm(left - right)
+    #     # Horizontal distance
+    #     h = np.linalg.norm(left - right)
         
-        # MAR formula
-        mar = v / (h + 1e-6)
-        return mar
+    #     # MAR formula
+    #     mar = v / (h + 1e-6)
+    #     return mar
     
-    def _head_pose(self, points, w, h):
-        """Estimate head pose (pitch, yaw, roll) from facial landmarks"""
-        # Key points for pose estimation
-        nose_tip = points[1]
-        chin = points[152]
-        left_eye = points[33]
-        right_eye = points[263]
-        left_mouth = points[61]
-        right_mouth = points[291]
+    # def _head_pose(self, points, w, h):
+    #     """Estimate head pose (pitch, yaw, roll) from facial landmarks"""
+    #     # Key points for pose estimation
+    #     nose_tip = points[1]
+    #     chin = points[152]
+    #     left_eye = points[33]
+    #     right_eye = points[263]
+    #     left_mouth = points[61]
+    #     right_mouth = points[291]
         
-        # Yaw (left-right head rotation)
-        eye_center = (left_eye + right_eye) / 2
-        yaw = np.arctan2(nose_tip[0] - eye_center[0], nose_tip[2] - eye_center[2] + 1e-6)
+    #     # Yaw (left-right head rotation)
+    #     eye_center = (left_eye + right_eye) / 2
+    #     yaw = np.arctan2(nose_tip[0] - eye_center[0], nose_tip[2] - eye_center[2] + 1e-6)
         
-        # Pitch (up-down head rotation)
-        pitch = np.arctan2(nose_tip[1] - chin[1], abs(nose_tip[2] - chin[2]) + 1e-6)
+    #     # Pitch (up-down head rotation)
+    #     pitch = np.arctan2(nose_tip[1] - chin[1], abs(nose_tip[2] - chin[2]) + 1e-6)
         
-        # Roll (head tilt)
-        roll = np.arctan2(right_eye[1] - left_eye[1], right_eye[0] - left_eye[0] + 1e-6)
+    #     # Roll (head tilt)
+    #     roll = np.arctan2(right_eye[1] - left_eye[1], right_eye[0] - left_eye[0] + 1e-6)
         
-        return pitch, yaw, roll
+    #     return pitch, yaw, roll
 
-    def _facial_symmetry(self, points):
-        """Calculate facial symmetry score"""
-        # Compare left and right landmarks
-        left_landmarks = [33, 133, 61, 206]  # Left eye, mouth, cheek
-        right_landmarks = [263, 362, 291, 426]  # Right eye, mouth, cheek
+    # def _facial_symmetry(self, points):
+    #     """Calculate facial symmetry score"""
+    #     # Compare left and right landmarks
+    #     left_landmarks = [33, 133, 61, 206]  # Left eye, mouth, cheek
+    #     right_landmarks = [263, 362, 291, 426]  # Right eye, mouth, cheek
         
-        # Get face center (nose tip)
-        center_x = points[1][0]
+    #     # Get face center (nose tip)
+    #     center_x = points[1][0]
         
-        # Calculate symmetry for each pair
-        symmetry_scores = []
-        for left_idx, right_idx in zip(left_landmarks, right_landmarks):
-            left_dist = abs(points[left_idx][0] - center_x)
-            right_dist = abs(points[right_idx][0] - center_x)
+    #     # Calculate symmetry for each pair
+    #     symmetry_scores = []
+    #     for left_idx, right_idx in zip(left_landmarks, right_landmarks):
+    #         left_dist = abs(points[left_idx][0] - center_x)
+    #         right_dist = abs(points[right_idx][0] - center_x)
             
-            # Symmetry score (closer to 1 = more symmetric)
-            score = 1.0 - abs(left_dist - right_dist) / (left_dist + right_dist + 1e-6)
-            symmetry_scores.append(score)
+    #         # Symmetry score (closer to 1 = more symmetric)
+    #         score = 1.0 - abs(left_dist - right_dist) / (left_dist + right_dist + 1e-6)
+    #         symmetry_scores.append(score)
         
-        return np.mean(symmetry_scores)
+    #     return np.mean(symmetry_scores)
 
     def __len__(self):
         return len(self.video_list)
@@ -2261,6 +2261,50 @@ class VideoDeceptionDataset(Dataset):
             # This returns shape (64, 50)
             # behavioral_features = self._extract_behavioral_features(frames)
             face_crops, behavioral_features = self._process_mmpda_pipeline(frames)
+
+            # # ==================================================================
+            # # DEBUG: SAVE 1 SAMPLE FRAME PER VIDEO
+            # # ==================================================================
+            # # Create debug directory
+            # debug_dir = "debug_preprocessed_samples"
+            # os.makedirs(debug_dir, exist_ok=True)
+            
+            # # Pick a random frame index to verify
+            # rnd_idx = np.random.randint(0, len(face_crops))
+            
+            # # 1. Get the Image (The 160x160 Crop the model actually sees)
+            # # Convert RGB (MediaPipe/Tensor format) back to BGR (OpenCV format)
+            # debug_img = cv2.cvtColor(face_crops[rnd_idx], cv2.COLOR_RGB2BGR)
+            
+            # # 2. Get the Features for this frame
+            # feats = behavioral_features[rnd_idx]
+            
+            # # 3. Overlay Key Features on the image to verify they match the face
+            # # -- Head Pose (Indices 35-37: Pitch, Yaw, Roll)
+            # pose_txt = f"Y:{feats[36]:.1f} P:{feats[35]:.1f}"
+            
+            # # -- Emotions (Indices 43-47: Happy, Sad, Surprise, Fear, Anger)
+            # emo_names = ['Hap', 'Sad', 'Sur', 'Fea', 'Ang']
+            # emo_vals = feats[43:48]
+            # top_emo_idx = np.argmax(emo_vals)
+            # emo_txt = f"{emo_names[top_emo_idx]}:{emo_vals[top_emo_idx]:.2f}"
+            
+            # # -- Valence/Arousal (Indices 48-49)
+            # va_txt = f"V:{feats[48]:.1f} A:{feats[49]:.1f}"
+
+            # # Draw text (White with Black outline for readability)
+            # def draw_txt(img, text, y):
+            #     cv2.putText(img, text, (5, y), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0,0,0), 2) # Outline
+            #     cv2.putText(img, text, (5, y), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255,255,255), 1) # Text
+
+            # draw_txt(debug_img, pose_txt, 15)
+            # draw_txt(debug_img, emo_txt, 30)
+            # draw_txt(debug_img, va_txt, 45)
+            
+            # # Save to disk
+            # safe_name = os.path.basename(video_path).replace('.', '_')
+            # cv2.imwrite(os.path.join(debug_dir, f"{safe_name}_frame{rnd_idx}.jpg"), debug_img)
+            # # ==================================================================
 
             # FIX THE SHAPE MISMATCH (The Fix for your Warning)
             EXPECTED_RAW_DIM = 50
