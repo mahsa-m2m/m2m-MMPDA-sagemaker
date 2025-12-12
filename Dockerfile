@@ -8,7 +8,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Set working directory
 WORKDIR /opt/ml/code
 
-# Install system dependencies (matching your requirements comments)
+# Install system dependencies (matching the requirements comments)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     libgl1 \
@@ -24,7 +24,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Upgrade pip
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
-# Install exact versions from your requirements.txt
+# Install exact versions from the requirements.txt
 # Installing in groups to optimize layer caching
 
 # PyTorch ecosystem (should already be in base, but ensuring exact versions)

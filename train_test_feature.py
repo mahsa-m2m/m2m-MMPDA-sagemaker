@@ -1017,7 +1017,7 @@ def setup_seed(seed):
 #             # This returns shape (64, 50)
 #             behavioral_features = self._extract_behavioral_features(frames)
 
-#             # FIX THE SHAPE MISMATCH (The Fix for your Warning)
+#             # FIX THE SHAPE MISMATCH (The Fix for the Warning)
 #             EXPECTED_RAW_DIM = 50
             
 #             # Validate shape
@@ -2306,7 +2306,7 @@ class VideoDeceptionDataset(Dataset):
             # cv2.imwrite(os.path.join(debug_dir, f"{safe_name}_frame{rnd_idx}.jpg"), debug_img)
             # # ==================================================================
 
-            # FIX THE SHAPE MISMATCH (The Fix for your Warning)
+            # FIX THE SHAPE MISMATCH (The Fix for the Warning)
             EXPECTED_RAW_DIM = 50
             
             # Validate shape
@@ -2546,7 +2546,7 @@ def load_checkpoint(model, optimizer, scheduler_warmup, scheduler_cosine, device
 def compute_class_weights(dataset):
     """
     Fast version - directly access labels without loading full samples
-    Only use if your dataset has a direct label access method
+    Only use if the dataset has a direct label access method
     """
     print(f"\n{'='*60}")
     print(f"📊 Computing Class Weights (Fast Mode)...")

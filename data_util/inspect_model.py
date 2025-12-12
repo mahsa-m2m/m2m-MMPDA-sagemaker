@@ -15,7 +15,7 @@ print("\n--- SAMPLE LAYERS ---")
 for key in layer_names[:5]:
     print(key)
 
-# Check specifically for your sub-models
+# Check specifically for the sub-models
 print("\n--- CONTENT CHECK ---")
 print(f"Has Audio Model? {any('audio_model' in k for k in layer_names)}")
 print(f"Has Face Model?  {any('face_model' in k for k in layer_names)}")

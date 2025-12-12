@@ -67,7 +67,7 @@ class FusionInferenceService:
         if not hasattr(config.MODEL_ARGS, 'device'):
             config.MODEL_ARGS.device = config.DEVICE
         
-        # Also ensure attn_mask exists (it is used in your get_network call)
+        # Also ensure attn_mask exists (it is used in the get_network call)
         if not hasattr(config.MODEL_ARGS, 'attn_mask'):
             config.MODEL_ARGS.attn_mask = None
         

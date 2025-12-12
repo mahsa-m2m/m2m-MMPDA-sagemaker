@@ -5,7 +5,7 @@ import cv2
 import numpy as np
 import time
 
-# --- PROJECT SETUP (Matches your main.py) ---
+# --- PROJECT SETUP ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 sys.path.append(parent_dir)
@@ -13,7 +13,7 @@ sys.path.append(parent_dir)
 import config
 from preprocessing import InferencePreprocessor
 
-# Import your model
+# Import the model
 try:
     # from models_comp.fusion_model import MinimalFusionModule
     from models_comp.fusion_model import FusionModule
@@ -85,10 +85,8 @@ class FusionVisualizer:
     #         data = self.preprocessor.process_video(video_path)
             
     #         # Ensure batch dim exists (1, ...)
-    #         # Adjust based on what your preprocessor returns. 
+    #         # Adjust based on what the preprocessor returns. 
     #         # If it returns (C, T, H, W), we need to unsqueeze(0).
-    #         # Based on your Dataset code, it seems your preprocessor returns unsqueezed data?
-    #         # Let's verify standard shape:
     #         vision_behaviour = data['vision_behaviour'].to(config.DEVICE)
     #         vision_face = data['vision_face'].to(config.DEVICE)
     #         audio_mel = data['audio_mel'].to(config.DEVICE)
@@ -159,10 +157,10 @@ class FusionVisualizer:
     #     print(f"   Model Prediction: {pred_label}")
 
     #     # 4. Generate Video Overlay
-    #     # Create Dummy Feature Names (or map them if you know your specific OpenFace columns)
+    #     # Create Dummy Feature Names
     #     num_feats = vision_behaviour.shape[-1]
     #     feature_names = [f"Feat_{i}" for i in range(num_feats)]
-    #     # Example mapping if you know them:
+    #     
     #     # feature_names = ['GazeX', 'GazeY', 'AU1', 'AU2', ...] 
 
     #     self.create_video(raw_frames, face_cams, beh_saliency, feature_names, output_filename, pred_label)

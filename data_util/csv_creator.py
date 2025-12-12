@@ -181,8 +181,7 @@ val_df, test_df = train_test_split(
 )
 
 # 4. Balance the Training Set
-# You requested the Train set be balanced for both classes.
-# We will undersample the majority class in the training set.
+# Will undersample the majority class in the training set.
 
 # Separate the classes
 train_truthful = train_df[train_df['label'] == 'truthful']
@@ -236,7 +235,7 @@ print("\nProcessing Complete!")
 # import os
 
 # # --- CONFIGURATION ---
-# # Define the path to your local folders
+# # Define the path to the local folders
 # # '.' represents the current directory where this script runs
 # BASE_DIR = '/home/sagemaker-user/mahsa-m2m-MMPDA-sagemaker/sample/train' 
 # PATH_TRUTHFUL = os.path.join(BASE_DIR, 'truthful')

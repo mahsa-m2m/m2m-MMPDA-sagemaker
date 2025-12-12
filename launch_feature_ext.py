@@ -20,7 +20,7 @@ print(f"   Output: {s3_output_root}")
 
 # 3. Configure Estimator (Training Job)
 estimator = PyTorch(
-    entry_point='data_util/feature_extractor.py', # Your existing script
+    entry_point='data_util/feature_extractor.py', 
     source_dir='.',
     role=role,
     instance_type='ml.c5.18xlarge',
@@ -38,12 +38,12 @@ estimator = PyTorch(
     volume_size=1024,
     
     # --- OUTPUT MAGIC ---
-    # We map the local checkpoint folder to your S3 Output bucket.
+    # We map the local checkpoint folder to the S3 Output bucket.
     # SageMaker syncs this folder to S3 continuously.
     checkpoint_s3_uri=s3_output_root,
     checkpoint_local_path='/opt/ml/checkpoints',
     
-    # Pass arguments to your script
+    # Pass arguments to the script
     hyperparameters={
         # Input mapped by SageMaker to 'training' channel
         'data_dir': '/opt/ml/input/data/training',

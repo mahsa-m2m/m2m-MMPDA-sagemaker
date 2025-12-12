@@ -146,7 +146,7 @@ class AU_GAZE_Affect7_LSTM_MLP(nn.Module):
         #### Check if the feature dimension (last dim) is 0
         if x_gaze.shape[-1] == 0:
             print("WARNING: Empty gaze features detected. Padding with zeros to prevent crash.")
-            # The LSTM expects input_size=8 (based on your error message)
+            # The LSTM expects input_size=8 
             expected_features = 8 
             
             # Create a tensor of zeros with shape [Seq_Len, Batch_Size, 8]
