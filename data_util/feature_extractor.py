@@ -13,8 +13,11 @@ import math
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
+
+
+cv2.setNumThreads(0)
 # ==========================================
-# 1. INSTALL DEPENDENCIES (Run once)
+# 1. INSTALL DEPENDENCIES
 # ==========================================
 def install_dependencies():
     # Check if already installed to avoid redundant calls in sub-processes
@@ -35,8 +38,7 @@ from tqdm import tqdm
 
 
 # ==========================================
-# 2. STANDALONE PROCESSING FUNCTIONS
-#    (Must be top-level for Multiprocessing)
+# 2. PROCESSING FUNCTIONS
 # ==========================================
 
 def get_mediapipe_features(blendshapes, matrix):
@@ -276,7 +278,8 @@ if __name__ == "__main__":
 
     # Determine Workers
     # Leave 2 cores free for OS and I/O management
-    max_workers = max(1, multiprocessing.cpu_count() - 2)
+    # max_workers = max(1, multiprocessing.cpu_count() - 2)
+    max_workers = 32
     print(f"🚀 Launching extraction with {max_workers} parallel workers.")
 
     splits = [('train', args.train_csv), ('val', args.val_csv), ('test', args.test_csv)]
@@ -326,11 +329,12 @@ if __name__ == "__main__":
             continue
 
         print(f"   Queueing {len(work_items)} videos for processing...")
-
+        
+        results = []
         # EXECUTE PARALLEL PROCESSING
         # chunksize=4 helps reduce inter-process communication overhead
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
-            # We map the function to the list of arguments
+            # map the function to the list of arguments
             # results = list(executor.map(process_single_video, work_items, chunksize=4))
             process_iterator = executor.map(process_single_video, work_items, chunksize=4)
             
@@ -338,7 +342,7 @@ if __name__ == "__main__":
                 results.append(res)
         
 
-        # Simple Summary
+        # Summary
         success_count = results.count("SUCCESS")
         skip_count = results.count("SKIP")
         fail_count = len(results) - success_count - skip_count

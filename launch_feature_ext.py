@@ -1,6 +1,7 @@
 import sagemaker
 from sagemaker.pytorch import PyTorch
 from sagemaker import get_execution_role
+from sagemaker.inputs import TrainingInput 
 
 sess = sagemaker.Session()
 role = get_execution_role()
@@ -32,14 +33,12 @@ estimator = PyTorch(
     # --- SPOT INSTANCE CONFIGURATION ---
     use_spot_instances=True,
     max_run=86400,          # Max run time (24 hours)
-    max_wait=86400,         # Max wait time (must be >= max_run)
-    
-    # Disk Size: 179GB Input + 460GB Output + Buffer
-    volume_size=1024,
+    max_wait=86400,         
+
+    # Disk Size
+    volume_size=200,
     
     # --- OUTPUT MAGIC ---
-    # We map the local checkpoint folder to the S3 Output bucket.
-    # SageMaker syncs this folder to S3 continuously.
     checkpoint_s3_uri=s3_output_root,
     checkpoint_local_path='/opt/ml/checkpoints',
     
@@ -58,14 +57,25 @@ estimator = PyTorch(
     }
 )
 
+fast_file_input = TrainingInput(
+    s3_data=s3_data_root,
+    input_mode='FastFile'
+)
+
 # 4. Launch
 estimator.fit(
     inputs={
-        # This downloads all files from s3_data_root to /opt/ml/input/data/training
-        'training': s3_data_root
+        'training': fast_file_input  
     },
-    wait=False
+    wait=True
 )
+# estimator.fit(
+#     inputs={
+#         # This downloads all files from s3_data_root to /opt/ml/input/data/training
+#         'training': s3_data_root
+#     },
+#     wait=True
+# )
 
 print(f"\n✅ Spot Job submitted successfully!")
 print(f"Job Name: {estimator.latest_training_job.job_name}")
