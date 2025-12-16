@@ -24,19 +24,19 @@ estimator = PyTorch(
     entry_point='data_util/feature_extractor.py', 
     source_dir='.',
     role=role,
-    instance_type='ml.c5.18xlarge',
+    instance_type='ml.c5.4xlarge', # ml.c5.18xlarge
     instance_count=1,
     framework_version='2.0',
     py_version='py310',
     base_job_name='mmpda-spot-extract',
     
     # --- SPOT INSTANCE CONFIGURATION ---
-    use_spot_instances=True,
-    max_run=86400,          # Max run time (24 hours)
-    max_wait=86400,         
+    use_spot_instances=False,
+    # max_run=86400,          # Max run time (24 hours)
+    # max_wait=86400,         
 
     # Disk Size
-    volume_size=200,
+    volume_size=1024,
     
     # --- OUTPUT MAGIC ---
     checkpoint_s3_uri=s3_output_root,
@@ -59,7 +59,7 @@ estimator = PyTorch(
 
 fast_file_input = TrainingInput(
     s3_data=s3_data_root,
-    input_mode='FastFile'
+    input_mode='File'
 )
 
 # 4. Launch
