@@ -91,2268 +91,339 @@ def setup_seed(seed):
     torch.cuda.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
 
+import os
+import torch
+import pandas as pd
+import numpy as np
+from torch.utils.data import Dataset
+from pathlib import Path
 
-# class VideoDeceptionDataset(Dataset):
-#     """
-#     Dataset for loading video files and extracting multimodal features.
 
-#     Expected directory structure:
-#     data_root/
-#         truthful/
-#             video1.mp4
-#             video2.avi
-#             ...
-#         deceptive/
-#             video1.mp4
-#             video2.avi
-#             ...
-#     """
-
-#     def __init__(self, csv_file=None, data_root=None, annotation_file=None,
-#                  num_frames=50, frame_size=(160, 160),
-#                  audio_length=16000, sample_rate=16000,
-#                  n_mels=128, mode='train'):
-#         """
-#         Args:
-#             data_root: Root directory with truthful/deceptive subdirectories
-#             annotation_file: Path to file with video paths and labels
-#             num_frames: Number of frames to sample (T=64 for behavioral features)
-#             frame_size: Target size for face frames (H, W)
-#             audio_length: Length of audio to sample
-#             sample_rate: Audio sample rate
-#             n_mels: Number of mel frequency bins
-#             mode: 'train', 'val', or 'test'
-#         """
-#         self.num_frames = num_frames
-#         self.frame_size = frame_size
-#         self.audio_length = audio_length
-#         self.sample_rate = sample_rate
-#         self.n_mels = n_mels
-#         self.mode = mode
-#         self.video_list = []
-#         self.labels = []
-
-#         self.face_mesh = None
-#         self.face_mesh_initialized = False
-#         self.mp_face_mesh = mp.solutions.face_mesh
-
-#          # --- LOAD DATA LOGIC ---
-#         if csv_file is not None and os.path.exists(csv_file):
-#             self._load_from_csv(csv_file, data_root)
-#         elif data_root is not None:
-#             self._load_from_directory(data_root)
-#         else:
-#             raise ValueError("Either csv_file or data_root must be provided")
-
-#     def _init_mediapipe(self):
-#         """
-#         Initialize MediaPipe Face Mesh
-#         Be called in each worker process
-#         """
-#         if self.face_mesh_initialized:
-#             return
-        
-#         try:
-#             print("🔧 Initializing MediaPipe Face Mesh...")
-#             self.face_mesh = self.mp_face_mesh.FaceMesh(
-#                 static_image_mode=True,  # Use True for video frames
-#                 max_num_faces=3,  # detect 3 faces per frame
-#                 refine_landmarks=True,  # Get more detailed landmarks
-#                 min_detection_confidence=0.4,
-#                 min_tracking_confidence=0.4
-#             )
-#             self.face_mesh_initialized = True
-#             print("✅ MediaPipe Face Mesh initialized successfully")
-#         except Exception as e:
-#             print(f"❌ Failed to initialize MediaPipe: {str(e)}")
-#             import traceback
-#             traceback.print_exc()
-#             self.face_mesh = None
-#             self.face_mesh_initialized = False
-    
-#     def _load_from_csv(self, csv_file, data_root):
-#             """
-#             Load paths and labels from CSV, converting S3 paths to local container paths.
-#             Input CSV format: [s3_path, label] with a header.
-#             """
-#             print(f"📄 Loading dataset from CSV: {csv_file}")
-            
-#             # Label mapping
-#             label_map = {'truthful': 0, 'deceptive': 1, 'truth': 0, 'lie': 1}
-
-#             try:
-#                 # Read CSV. Detect the header automatically
-#                 df = pd.read_csv(csv_file)
-                
-#                 # Ensure we have columns. If not, fallback to index.
-#                 if 's3_path' not in df.columns and 'path' not in df.columns:
-#                     # If pandas didn't detect header, reload assuming first row is data
-#                     df = pd.read_csv(csv_file, header=None)
-#                     df.columns = ['path', 'label']
-#                 else:
-#                     # Normalize column names to 'path' and 'label'
-#                     cols = list(df.columns)
-#                     # Rename the column that looks like a path (e.g. 's3_path') to 'path'
-#                     rename_map = {c: 'path' for c in cols if 'path' in c.lower()}
-#                     # Rename the column that looks like a label to 'label'
-#                     rename_map.update({c: 'label' for c in cols if 'label' in c.lower()})
-#                     df.rename(columns=rename_map, inplace=True)
-
-#             except Exception as e:
-#                 print(f"❌ Error reading CSV with Pandas: {e}")
-#                 return
-
-#             valid_count = 0
-#             missing_count = 0
-
-#             for index, row in df.iterrows():
-#                 raw_path = str(row['path']).strip()
-#                 label_raw = str(row['label']).strip().lower()
-
-#                 # Map Label
-#                 if label_raw in label_map:
-#                     label = label_map[label_raw]
-#                 else:
-#                     # Skip unknown labels
-#                     continue
-
-#                 # CONSTRUCT LOCAL PATH
-#                 # Input: s3://bucket/.../dataset/video/deceptive/video.mkv
-#                 # Goal:  /opt/ml/input/data/training/deceptive/video.mkv
-                
-#                 filename = os.path.basename(raw_path) # "video.mkv"
-                
-#                 # Determine subfolder based on the path string (safest) or label
-#                 if '/truthful/' in raw_path.lower():
-#                     subfolder = 'truthful'
-#                 elif '/deceptive/' in raw_path.lower():
-#                     subfolder = 'deceptive'
-#                 else:
-#                     # Fallback: guess folder based on label
-#                     subfolder = 'truthful' if label == 0 else 'deceptive'
-
-#                 # Construct the final local path
-#                 if data_root:
-#                     final_path = os.path.join(data_root, subfolder, filename)
-#                 else:
-#                     # Fallback for local testing if data_root isn't set
-#                     final_path = raw_path
-
-#                 # Verify existence
-#                 if os.path.exists(final_path):
-#                     self.video_list.append(final_path)
-#                     self.labels.append(label)
-#                     valid_count += 1
-#                 else:
-#                     if missing_count < 3: 
-#                         print(f"⚠️ File not found: {final_path}")
-#                         print(f"   (Original S3 path: {raw_path})")
-#                     missing_count += 1
-
-#             print(f"✅ Loaded {valid_count} videos.")
-#             if missing_count > 0:
-#                 print(f"⚠️ Skipped {missing_count} missing files (check path mapping).")
-
-#     def _load_from_directory(self, data_root):
-#         """Load videos from directory structure"""
-#         data_root = Path(data_root)
-
-#         # Load truthful videos (label 0)
-#         truthful_dir = data_root / 'truthful'
-#         if truthful_dir.exists():
-#             for video_file in truthful_dir.glob('*'):
-#                 if video_file.suffix.lower() in ['.mp4', '.avi', '.mov', '.mkv', '.wmv']:
-#                     self.video_list.append(str(video_file))
-#                     self.labels.append(0)
-
-#         # Load deceptive videos (label 1)
-#         deceptive_dir = data_root / 'deceptive'
-#         if deceptive_dir.exists():
-#             for video_file in deceptive_dir.glob('*'):
-#                 if video_file.suffix.lower() in ['.mp4', '.avi', '.mov', '.mkv', '.wmv']:
-#                     self.video_list.append(str(video_file))
-#                     self.labels.append(1)
-
-#         print(f"Loaded {len(self.video_list)} videos from {data_root}")
-#         print(f"Truthful: {self.labels.count(0)}, Deceptive: {self.labels.count(1)}")
-
-#     def _count_frames_manually(self, cap):
-#         """
-#         Manually count frames for videos with corrupted metadata
-#         """
-#         count = 0
-#         while True:
-#             ret, _ = cap.read()
-#             if not ret:
-#                 break
-#             count += 1
-#             if count > 10000:  # Safety limit
-#                 break
-#         return count
-
-#     def _load_from_annotation(self, annotation_file):
-#         """Load videos from annotation file"""
-#         with open(annotation_file, 'r') as f:
-#             lines = f.readlines()
-
-#         for line in lines:
-#             line = line.strip()
-#             if not line or line.startswith('#'):
-#                 continue
-
-#             parts = line.split(',')
-#             if len(parts) >= 2:
-#                 video_path = parts[0].strip()
-#                 label = int(parts[1].strip())
-
-#                 if os.path.exists(video_path):
-#                     self.video_list.append(video_path)
-#                     self.labels.append(label)
-
-#         print(f"Loaded {len(self.video_list)} videos from {annotation_file}")
-#         print(f"Truthful: {self.labels.count(0)}, Deceptive: {self.labels.count(1)}")
-    
-#     def _get_dummy_sample(self, label, video_path):
-#         """
-#         Return a safe dummy sample when video processing fails completely
-#         """
-#         return {
-#             'vision_behaviour': torch.zeros(self.num_frames, 50, dtype=torch.float32),
-#             'vision_face': torch.zeros(3, self.num_frames, self.frame_size[0], self.frame_size[1], dtype=torch.float32),
-#             'audio_mel': torch.zeros(3, self.n_mels, self.audio_length // 160 + 1, dtype=torch.float32),
-#             'audio_wave': torch.zeros(self.audio_length, dtype=torch.float32),
-#             'label': torch.tensor(label, dtype=torch.long),
-#             'videoname': os.path.basename(video_path) + '_DUMMY'
-#         }
-
-#     def _extract_audio(self, video_path):
-#         """
-#         Extract audio from video - WORKS WITH ALL FORMATS
-#         """
-#         try:
-#             import torchaudio
-#             import subprocess
-#             import tempfile
-            
-#             # Try direct loading first
-#             try:
-#                 waveform, sample_rate = torchaudio.load(video_path)
-#             except:
-#                 # Fallback: extract audio to temp wav file using ffmpeg
-#                 with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_audio:
-#                     temp_path = temp_audio.name
-                
-#                 try:
-#                     # Extract audio using ffmpeg (handles all video formats)
-#                     subprocess.run([
-#                         'ffmpeg', '-i', video_path, '-vn', '-acodec', 'pcm_s16le',
-#                         '-ar', str(self.sample_rate), '-ac', '1', '-y', temp_path
-#                     ], check=True, capture_output=True)
-                    
-#                     waveform, sample_rate = torchaudio.load(temp_path)
-#                     os.remove(temp_path)
-#                 except Exception as e:
-#                     print(f"⚠️ Audio extraction failed for {os.path.basename(video_path)}: {str(e)}")
-#                     # Return silent audio
-#                     waveform = torch.zeros(1, self.audio_length)
-#                     sample_rate = self.sample_rate
-            
-#             # Resample if necessary
-#             if sample_rate != self.sample_rate:
-#                 resampler = torchaudio.transforms.Resample(sample_rate, self.sample_rate)
-#                 waveform = resampler(waveform)
-            
-#             # Convert to mono if stereo
-#             if waveform.shape[0] > 1:
-#                 waveform = torch.mean(waveform, dim=0, keepdim=True)
-            
-#             # Pad or truncate to target length
-#             if waveform.shape[1] < self.audio_length:
-#                 waveform = torch.nn.functional.pad(waveform, (0, self.audio_length - waveform.shape[1]))
-#             else:
-#                 waveform = waveform[:, :self.audio_length]
-            
-#             # Generate mel spectrogram
-#             mel_transform = torchaudio.transforms.MelSpectrogram(
-#                 sample_rate=self.sample_rate,
-#                 n_mels=self.n_mels,
-#                 n_fft=400,
-#                 hop_length=160
-#             )
-#             mel_spec = mel_transform(waveform)
-            
-#             # Convert to 3-channel format (for compatibility)
-#             mel_spec = mel_spec.repeat(3, 1, 1)
-            
-#             return waveform.squeeze(0).numpy(), mel_spec.numpy()
-        
-#         except Exception as e:
-#             print(f"❌ Audio extraction error for {os.path.basename(video_path)}: {str(e)}")
-#             # Return silent audio
-#             return (np.zeros(self.audio_length, dtype=np.float32),
-#                     np.zeros((3, self.n_mels, self.audio_length // 160 + 1), dtype=np.float32))
-
-#     def _sample_frames(self, video_path):
-#         """
-#         Sample frames uniformly from video with FFmpeg fallback for problematic formats
-#         """
-#         video_name = os.path.basename(video_path)
-        
-#         # Check if file exists
-#         if not os.path.exists(video_path):
-#             print(f"❌ File does not exist: {video_path}")
-#             return None
-        
-#         file_size = os.path.getsize(video_path)
-#         print(f"📹 Processing: {video_name} ({file_size/(1024*1024):.2f} MB)")
-        
-#         # First attempt: OpenCV direct reading
-#         cap = cv2.VideoCapture(video_path)
-        
-#         if not cap.isOpened():
-#             print(f"⚠️ OpenCV failed to open {video_name}, trying FFmpeg fallback...")
-#             self.cap_release_safe(cap)
-#             return self._sample_frames_ffmpeg(video_path)
-        
-#         try:
-#             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-#             fps = cap.get(cv2.CAP_PROP_FPS)
-#             width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-#             height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            
-#             print(f"   Frames: {total_frames}, FPS: {fps:.1f}, Size: {width}x{height}")
-            
-#             # Handle invalid metadata
-#             if total_frames <= 0 or fps <= 0:
-#                 print(f"   ⚠️ Invalid metadata, trying FFmpeg fallback...")
-#                 cap.release()
-#                 return self._sample_frames_ffmpeg(video_path)
-            
-#             # Test reading first frame
-#             ret, test_frame = cap.read()
-#             if not ret or test_frame is None:
-#                 print(f"   ❌ Cannot read frames, trying FFmpeg fallback...")
-#                 cap.release()
-#                 return self._sample_frames_ffmpeg(video_path)
-            
-#             print(f"   ✅ First frame OK: {test_frame.shape}")
-#             cap.set(cv2.CAP_PROP_POS_FRAMES, 0)  # Reset
-            
-#             # Determine sampling indices
-#             if total_frames < self.num_frames:
-#                 print(f"   ⚠️ Only {total_frames} frames, need {self.num_frames} (will duplicate)")
-#                 indices = np.linspace(0, max(0, total_frames - 1), self.num_frames).astype(int)
-#             else:
-#                 indices = np.linspace(0, total_frames - 1, self.num_frames).astype(int)
-            
-#             frames = []
-#             last_valid_frame = None
-#             failed_reads = 0
-            
-#             for idx in indices:
-#                 cap.set(cv2.CAP_PROP_POS_FRAMES, int(idx))
-#                 ret, frame = cap.read()
-                
-#                 if ret and frame is not None and frame.size > 0:
-#                     # Resize and convert
-#                     frame = cv2.resize(frame, (self.frame_size[1], self.frame_size[0]))
-#                     frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-#                     frames.append(frame)
-#                     last_valid_frame = frame.copy()
-#                 else:
-#                     failed_reads += 1
-#                     # Use last valid frame or black frame
-#                     if last_valid_frame is not None:
-#                         frames.append(last_valid_frame.copy())
-#                     else:
-#                         frames.append(np.zeros((self.frame_size[0], self.frame_size[1], 3), dtype=np.uint8))
-            
-#             cap.release()
-            
-#             if failed_reads > 0:
-#                 print(f"   ⚠️ Failed to read {failed_reads}/{len(indices)} frames (used fallback)")
-            
-#             # If too many failures, try FFmpeg
-#             if failed_reads > len(indices) // 2:
-#                 print(f"   ❌ Too many failed reads ({failed_reads}/{len(indices)}), trying FFmpeg...")
-#                 return self._sample_frames_ffmpeg(video_path)
-            
-#             # Validate frame count
-#             if len(frames) != self.num_frames:
-#                 while len(frames) < self.num_frames:
-#                     frames.append(frames[-1].copy() if frames else 
-#                                 np.zeros((self.frame_size[0], self.frame_size[1], 3), dtype=np.uint8))
-#                 frames = frames[:self.num_frames]
-            
-#             result = np.array(frames, dtype=np.uint8)
-#             print(f"   ✅ Loaded {self.num_frames} frames, shape: {result.shape}")
-            
-#             return result
-        
-#         except Exception as e:
-#             print(f"   ❌ Exception: {str(e)}")
-#             cap.release()
-#             # Try FFmpeg as last resort
-#             print(f"   Trying FFmpeg fallback...")
-#             return self._sample_frames_ffmpeg(video_path)
-
-#     def cap_release_safe(self, cap):
-#         """Safely release VideoCapture"""
-#         try:
-#             if cap is not None:
-#                 cap.release()
-#         except:
-#             pass
-    
-#     def _sample_frames_ffmpeg(self, video_path):
-#         """
-#         Sample frames using FFmpeg (works with ALL video formats: mp4, mkv, wmv, avi, etc.)
-#         This is more robust than OpenCV for problematic codecs
-#         """
-#         video_name = os.path.basename(video_path)
-#         print(f"   🔧 Using FFmpeg for: {video_name}")
-
-#         # Check if FFmpeg is available
-#         try:
-#             subprocess.run(['ffmpeg', '-version'], capture_output=True, timeout=2, check=True)
-#         except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
-#             print(f"      ❌ FFmpeg not available, cannot process this video")
-#             return None
-        
-#         # Initialize default values
-#         duration = 0.0
-#         fps = 30.0
-#         total_frames = self.num_frames * 2        
-
-#         try:
-#             # Get video duration and frame count using ffprobe
-#             probe_cmd = [
-#                 'ffprobe', '-v', 'error',
-#                 '-select_streams', 'v:0',
-#                 '-count_packets',
-#                 '-show_entries', 'stream=nb_read_packets,duration,r_frame_rate',
-#                 '-of', 'csv=p=0',
-#                 video_path
-#             ]
-            
-#             try:
-#                 result = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=10)
-#                 if result.returncode == 0:
-#                     parts = result.stdout.strip().split(',')
-#                     if len(parts) >= 2:
-#                         duration = float(parts[0]) if parts[0] else 0
-#                         fps_str = parts[1] if len(parts) > 1 else "30/1"
-                        
-#                         # Parse FPS (format: "30/1" or "29.97")
-#                         if '/' in fps_str:
-#                             num, den = map(float, fps_str.split('/'))
-#                             fps = num / den if den > 0 else 30.0
-#                         else:
-#                             fps = float(fps_str) if fps_str else 30.0
-                        
-#                         total_frames = int(duration * fps) if duration > 0 else self.num_frames * 2
-#                         print(f"      Video info: {duration:.1f}s, {fps:.1f} FPS, ~{total_frames} frames")
-#                     else:
-#                         total_frames = self.num_frames * 2
-#                 else:
-#                     total_frames = self.num_frames * 2
-#             except:
-#                 total_frames = self.num_frames * 2
-            
-#             # Calculate timestamps to extract
-#             if total_frames < self.num_frames:
-#                 timestamps = np.linspace(0, max(0.1, duration - 0.1), self.num_frames)
-#             else:
-#                 timestamps = np.linspace(0, duration - 0.1, self.num_frames) if duration > 0 else np.arange(self.num_frames) * 0.1
-            
-#             frames = []
-#             temp_dir = tempfile.mkdtemp()
-            
-#             try:
-#                 # Extract frames at specific timestamps
-#                 for i, ts in enumerate(timestamps):
-#                     output_file = os.path.join(temp_dir, f'frame_{i:04d}.jpg')
-                    
-#                     extract_cmd = [
-#                         'ffmpeg', '-ss', str(ts), '-i', video_path,
-#                         '-vframes', '1', '-vf', f'scale={self.frame_size[1]}:{self.frame_size[0]}',
-#                         '-y', output_file
-#                     ]
-                    
-#                     try:
-#                         subprocess.run(extract_cmd, capture_output=True, timeout=5, check=False)
-                        
-#                         if os.path.exists(output_file) and os.path.getsize(output_file) > 0:
-#                             frame = cv2.imread(output_file)
-#                             if frame is not None:
-#                                 frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-#                                 frames.append(frame)
-#                             else:
-#                                 # Use last valid or black frame
-#                                 if frames:
-#                                     frames.append(frames[-1].copy())
-#                                 else:
-#                                     frames.append(np.zeros((self.frame_size[0], self.frame_size[1], 3), dtype=np.uint8))
-#                         else:
-#                             # Fallback
-#                             if frames:
-#                                 frames.append(frames[-1].copy())
-#                             else:
-#                                 frames.append(np.zeros((self.frame_size[0], self.frame_size[1], 3), dtype=np.uint8))
-                    
-#                     except subprocess.TimeoutExpired:
-#                         print(f"      ⚠️ Timeout extracting frame {i}")
-#                         if frames:
-#                             frames.append(frames[-1].copy())
-#                         else:
-#                             frames.append(np.zeros((self.frame_size[0], self.frame_size[1], 3), dtype=np.uint8))
-            
-#             finally:
-#                 # Cleanup temp files
-#                 import shutil
-#                 try:
-#                     shutil.rmtree(temp_dir)
-#                 except:
-#                     pass
-            
-#             # Ensure correct number of frames
-#             if len(frames) == 0:
-#                 print(f"      ❌ FFmpeg failed to extract any frames")
-#                 return np.zeros((self.num_frames, self.frame_size[0], self.frame_size[1], 3), dtype=np.uint8)
-#                 # return None
-            
-#             while len(frames) < self.num_frames:
-#                 frames.append(frames[-1].copy())
-            
-#             frames = frames[:self.num_frames]
-            
-#             result = np.array(frames, dtype=np.uint8)
-#             print(f"      ✅ FFmpeg extracted {len(frames)} frames, shape: {result.shape}")
-            
-#             return result
-        
-#         except Exception as e:
-#             print(f"      ❌ FFmpeg fallback failed: {str(e)}")
-#             import traceback
-#             traceback.print_exc()
-#             return None
-
-#     def _extract_behavioral_features(self, frames):
-#         """
-#         Extract 50 behavioral features per frame:
-#         - 35 Action Units (AU)
-#         - 8 Gaze features
-#         - 5 Expression features
-#         - 2 Valence/Arousal features
-        
-#         Returns: (num_frames, 50) numpy array
-#         """
-#         # Initialize MediaPipe in the worker process
-#         self._init_mediapipe()
-
-#         all_features = []
-#         faces_detected = 0
-
-#         for frame_idx in range(len(frames)):
-#             frame = frames[frame_idx]
-
-#             # Ensure correct format and dimensions
-#             if frame.shape[0] != self.frame_size[0] or frame.shape[1] != self.frame_size[1]:
-#                 frame = cv2.resize(frame, (self.frame_size[1], self.frame_size[0]))
-
-#             # Ensure uint8 format for MediaPipe
-#             if frame.dtype != np.uint8:
-#                 frame = frame.astype(np.uint8)
-
-#             # Process with MediaPipe
-#             results = self.face_mesh.process(frame)
-
-#             if results.multi_face_landmarks and len(results.multi_face_landmarks) > 0:
-#                 landmarks = results.multi_face_landmarks[0].landmark
-#                 features = self._compute_features_from_landmarks(landmarks, frame.shape)
-#                 faces_detected += 1
-#             else:
-#                 # No face detected, use zero features
-#                 features = np.zeros(50, dtype=np.float32)
-
-#             # Validate: Ensure exactly 50 features
-#             if features.shape != (50,):
-#                 print(f"⚠️ WARNING: Feature shape is {features.shape}, expected (50,)")
-#                 if features.shape[0] < 50:
-#                     features = np.pad(features, (0, 50 - features.shape[0]), mode='constant')
-#                 else:
-#                     features = features[:50]
-            
-#             all_features.append(features)
-        
-#         # Report detection rate occasionally
-#         if random.random() < 0.05:  # 5% of videos
-#             print(f"  Face detection: {faces_detected}/{len(frames)} frames")
-
-#         return np.stack(all_features, axis=0)
-
-#     def _compute_features_from_landmarks(self, landmarks, image_shape):
-#         """
-#         Compute 50-dimensional feature vector from MediaPipe 478 face landmarks:
-        
-#         Feature breakdown:
-#         [0:35]   - Action Units (35)
-#         [35:43]  - Gaze features (8)
-#         [43:48]  - Expression features (5)
-#         [48:50]  - Valence/Arousal (2)
-#         """
-#         h, w = image_shape[:2]
-        
-#         # Convert landmarks to numpy array (x, y, z coordinates normalized)
-#         points = np.array([[lm.x * w, lm.y * h, lm.z * w] for lm in landmarks])
-        
-#         features = []
-        
-#         # ============================================================
-#         # PART 1: ACTION UNITS (35 features)
-#         # ============================================================
-        
-#         # --- Eyes (12 features) ---
-#         # AU5 (Upper Lid Raiser), AU7 (Lid Tightener), AU43 (Eyes Closed)
-#         left_eye_openness = self._eye_aspect_ratio(points, side='left')
-#         right_eye_openness = self._eye_aspect_ratio(points, side='right')
-        
-#         # Eye widths
-#         left_eye_width = np.linalg.norm(points[33] - points[133])
-#         right_eye_width = np.linalg.norm(points[362] - points[263])
-        
-#         # Inter-eye distance
-#         eye_distance = np.linalg.norm(points[33] - points[263])
-        
-#         # Upper/lower lid positions
-#         left_upper_lid = np.linalg.norm(points[159] - points[145])
-#         right_upper_lid = np.linalg.norm(points[386] - points[374])
-#         left_lower_lid = np.linalg.norm(points[145] - points[153])
-#         right_lower_lid = np.linalg.norm(points[374] - points[380])
-        
-#         # Eye squint/tightening
-#         left_eye_squint = np.linalg.norm(points[159] - points[153])
-#         right_eye_squint = np.linalg.norm(points[386] - points[380])
-        
-#         # Eye symmetry
-#         eye_symmetry = abs(left_eye_width - right_eye_width) / (eye_distance + 1e-6)
-        
-#         features.extend([
-#             left_eye_openness, right_eye_openness, left_eye_width, right_eye_width,
-#             eye_distance, left_upper_lid, right_upper_lid, left_lower_lid, right_lower_lid,
-#             left_eye_squint, right_eye_squint, eye_symmetry
-#         ])  # 12 features
-        
-#         # --- Eyebrows (8 features) ---
-#         # AU1 (Inner Brow Raiser), AU2 (Outer Brow Raiser), AU4 (Brow Lowerer)
-#         left_brow_height = self._eyebrow_height(points, side='left')
-#         right_brow_height = self._eyebrow_height(points, side='right')
-        
-#         # Inner brow points
-#         left_inner_brow = np.linalg.norm(points[70] - points[27])   # Left inner brow to nose bridge
-#         right_inner_brow = np.linalg.norm(points[300] - points[27]) # Right inner brow to nose bridge
-        
-#         # Outer brow points
-#         left_outer_brow = np.linalg.norm(points[105] - points[33])  # Left outer brow to eye
-#         right_outer_brow = np.linalg.norm(points[334] - points[263]) # Right outer brow to eye
-        
-#         # Brow distance and angle
-#         brow_distance = np.linalg.norm(points[70] - points[300])
-#         brow_angle = np.arctan2(points[300][1] - points[70][1], 
-#                                 points[300][0] - points[70][0])
-        
-#         features.extend([
-#             left_brow_height, right_brow_height, left_inner_brow, right_inner_brow,
-#             left_outer_brow, right_outer_brow, brow_distance, brow_angle
-#         ])  # 8 features
-        
-#         # --- Mouth (10 features) ---
-#         # AU10 (Upper Lip Raiser), AU12 (Lip Corner Puller/Smile), AU15 (Lip Corner Depressor)
-#         # AU20 (Lip Stretcher), AU23 (Lip Tightener), AU25 (Lips Part), AU26 (Jaw Drop)
-#         mouth_aspect_ratio = self._mouth_aspect_ratio(points)
-        
-#         # Mouth dimensions
-#         mouth_width = np.linalg.norm(points[61] - points[291])
-#         mouth_height = np.linalg.norm(points[13] - points[14])
-        
-#         # Lip positions
-#         upper_lip_center = np.linalg.norm(points[0] - points[13])
-#         lower_lip_center = np.linalg.norm(points[17] - points[14])
-        
-#         # Lip corners
-#         left_corner_height = np.linalg.norm(points[61] - points[291]) 
-#         right_corner_height = np.linalg.norm(points[291] - points[61])
-        
-#         # Mouth opening and lip distance
-#         mouth_opening = np.linalg.norm(points[13] - points[14])
-#         lip_distance = np.linalg.norm(points[0] - points[17])
-        
-#         # Mouth asymmetry
-#         left_mouth = np.linalg.norm(points[61] - points[0])
-#         right_mouth = np.linalg.norm(points[291] - points[0])
-#         mouth_asymmetry = abs(left_mouth - right_mouth) / (mouth_width + 1e-6)
-        
-#         features.extend([
-#             mouth_aspect_ratio, mouth_width, mouth_height, upper_lip_center, lower_lip_center,
-#             left_corner_height, right_corner_height, mouth_opening, lip_distance, mouth_asymmetry
-#         ])  # 10 features
-        
-#         # --- Nose and Cheeks (5 features) ---
-#         # AU9 (Nose Wrinkler), AU11 (Nasolabial Deepener)
-#         nose_width = np.linalg.norm(points[129] - points[358])
-#         nose_tip_height = np.linalg.norm(points[1] - points[2])
-        
-#         # Nasolabial folds (cheek to mouth)
-#         left_nasolabial = np.linalg.norm(points[206] - points[61])
-#         right_nasolabial = np.linalg.norm(points[426] - points[291])
-        
-#         # Nose to chin
-#         nose_to_chin = np.linalg.norm(points[1] - points[152])
-        
-#         features.extend([
-#             nose_width, nose_tip_height, left_nasolabial, right_nasolabial, nose_to_chin
-#         ])  # 5 features
-        
-#         # Total AU features: 12 + 8 + 10 + 5 = 35 
-        
-#         # ============================================================
-#         # PART 2: GAZE FEATURES (8 features)
-#         # ============================================================
-        
-#         # Head pose (pitch, yaw, roll)
-#         pitch, yaw, roll = self._head_pose(points, w, h)
-        
-#         # Eye gaze direction (simplified estimation)
-#         left_eye_center = (points[33] + points[133]) / 2
-#         right_eye_center = (points[362] + points[263]) / 2
-#         nose_bridge = points[168]
-        
-#         # Horizontal and vertical gaze for each eye
-#         left_gaze_h = (left_eye_center[0] - nose_bridge[0]) / w
-#         left_gaze_v = (left_eye_center[1] - nose_bridge[1]) / h
-#         right_gaze_h = (right_eye_center[0] - nose_bridge[0]) / w
-#         right_gaze_v = (right_eye_center[1] - nose_bridge[1]) / h
-        
-#         # Gaze convergence (measure of focus)
-#         gaze_convergence = abs(left_gaze_h - right_gaze_h)
-        
-#         features.extend([
-#             pitch, yaw, roll,
-#             left_gaze_h, left_gaze_v, right_gaze_h, right_gaze_v,
-#             gaze_convergence
-#         ])  # 8 features
-        
-#         # ============================================================
-#         # PART 3: EXPRESSION FEATURES (5 features)
-#         # ============================================================
-        
-#         # Overall facial symmetry
-#         symmetry = self._facial_symmetry(points)
-        
-#         # Face dimensions
-#         face_width = np.linalg.norm(points[234] - points[454])
-#         face_height = np.linalg.norm(points[10] - points[152])
-        
-#         # Expression activity indicators
-#         upper_face_activity = (left_brow_height + right_brow_height) / 2
-#         lower_face_activity = mouth_aspect_ratio
-        
-#         features.extend([
-#             symmetry, face_width, face_height, upper_face_activity, lower_face_activity
-#         ])  # 5 features
-        
-#         # ============================================================
-#         # PART 4: VALENCE/AROUSAL (2 features)
-#         # ============================================================
-        
-#         # Valence: positive (smile) vs negative (frown)
-#         # Use mouth corner positions relative to face center
-#         mouth_corners_avg = (left_mouth + right_mouth) / 2
-#         valence = mouth_corners_avg / (face_height + 1e-6)
-        
-#         # Arousal: high (alert, wide eyes) vs low (calm, relaxed)
-#         # Combine eye openness and mouth opening
-#         arousal = (left_eye_openness + right_eye_openness + mouth_aspect_ratio) / 3.0
-        
-#         features.extend([valence, arousal])  # 2 features
-        
-#         # ============================================================
-#         # FINALIZE
-#         # ============================================================
-        
-#         features = np.array(features, dtype=np.float32)
-        
-#         # Sanity check
-#         assert len(features) == 50, f"Expected 50 features, got {len(features)}"
-        
-#         # Clip extreme values
-#         features = np.clip(features, -100, 100)
-        
-#         # Normalize
-#         mean = features.mean()
-#         std = features.std()
-#         if std > 1e-6:
-#             features = (features - mean) / std
-        
-#         return features
-
-#     def _eye_aspect_ratio(self, points, side='left'):
-#         """Calculate Eye Aspect Ratio (EAR) for blink detection"""
-#         if side == 'left':
-#             # Left eye landmarks
-#             p1, p2, p3, p4, p5, p6 = 33, 160, 158, 133, 153, 144
-#         else:
-#             # Right eye landmarks
-#             p1, p2, p3, p4, p5, p6 = 362, 385, 387, 263, 373, 380
-        
-#         # Vertical distances
-#         v1 = np.linalg.norm(points[p2] - points[p6])
-#         v2 = np.linalg.norm(points[p3] - points[p5])
-        
-#         # Horizontal distance
-#         h = np.linalg.norm(points[p1] - points[p4])
-        
-#         # EAR formula
-#         ear = (v1 + v2) / (2.0 * h + 1e-6)
-#         return ear
-
-#     def _eyebrow_height(self, points, side='left'):
-#         """Calculate eyebrow height relative to eye"""
-#         if side == 'left':
-#             brow_point = points[70]   # Left eyebrow center
-#             eye_point = points[33]    # Left eye inner corner
-#         else:
-#             brow_point = points[300]  # Right eyebrow center
-#             eye_point = points[263]   # Right eye inner corner
-        
-#         height = np.linalg.norm(brow_point - eye_point)
-#         return height
-
-#     def _mouth_aspect_ratio(self, points):
-#         """Calculate Mouth Aspect Ratio (MAR)"""
-#         # Upper and lower lip center points
-#         upper = points[13]
-#         lower = points[14]
-        
-#         # Left and right mouth corners
-#         left = points[61]
-#         right = points[291]
-        
-#         # Vertical distance
-#         v = np.linalg.norm(upper - lower)
-        
-#         # Horizontal distance
-#         h = np.linalg.norm(left - right)
-        
-#         # MAR formula
-#         mar = v / (h + 1e-6)
-#         return mar
-    
-#     def _head_pose(self, points, w, h):
-#         """Estimate head pose (pitch, yaw, roll) from facial landmarks"""
-#         # Key points for pose estimation
-#         nose_tip = points[1]
-#         chin = points[152]
-#         left_eye = points[33]
-#         right_eye = points[263]
-#         left_mouth = points[61]
-#         right_mouth = points[291]
-        
-#         # Yaw (left-right head rotation)
-#         eye_center = (left_eye + right_eye) / 2
-#         yaw = np.arctan2(nose_tip[0] - eye_center[0], nose_tip[2] - eye_center[2] + 1e-6)
-        
-#         # Pitch (up-down head rotation)
-#         pitch = np.arctan2(nose_tip[1] - chin[1], abs(nose_tip[2] - chin[2]) + 1e-6)
-        
-#         # Roll (head tilt)
-#         roll = np.arctan2(right_eye[1] - left_eye[1], right_eye[0] - left_eye[0] + 1e-6)
-        
-#         return pitch, yaw, roll
-
-#     def _facial_symmetry(self, points):
-#         """Calculate facial symmetry score"""
-#         # Compare left and right landmarks
-#         left_landmarks = [33, 133, 61, 206]  # Left eye, mouth, cheek
-#         right_landmarks = [263, 362, 291, 426]  # Right eye, mouth, cheek
-        
-#         # Get face center (nose tip)
-#         center_x = points[1][0]
-        
-#         # Calculate symmetry for each pair
-#         symmetry_scores = []
-#         for left_idx, right_idx in zip(left_landmarks, right_landmarks):
-#             left_dist = abs(points[left_idx][0] - center_x)
-#             right_dist = abs(points[right_idx][0] - center_x)
-            
-#             # Symmetry score (closer to 1 = more symmetric)
-#             score = 1.0 - abs(left_dist - right_dist) / (left_dist + right_dist + 1e-6)
-#             symmetry_scores.append(score)
-        
-#         return np.mean(symmetry_scores)
-
-#     def __len__(self):
-#         return len(self.video_list)
-
-#     def __getitem__(self, idx):
-#         video_path = self.video_list[idx]
-#         label = self.labels[idx]
-
-#         # Enable verbose debugging for first 2 videos
-#         if idx < 2:
-#             print(f"\n{'#'*60}")
-#             print(f"# PROCESSING SAMPLE {idx}: {os.path.basename(video_path)}")
-#             print(f"{'#'*60}")
-
-#         try:
-#             # LOAD FRAMES
-#             frames = self._sample_frames(video_path)
-        
-#             if frames is None or frames.size == 0:
-#                 print(f"❌ Frames is None, creating dummy frames")
-#                 # Return dummy immediately, don't proceed
-#                 return self._get_dummy_sample(label, video_path)
-            
-#             # EXTRACT BEHAVIORAL FEATURES
-#             # This returns shape (64, 50)
-#             behavioral_features = self._extract_behavioral_features(frames)
-
-#             # FIX THE SHAPE MISMATCH (The Fix for the Warning)
-#             EXPECTED_RAW_DIM = 50
-            
-#             # Validate shape
-#             if behavioral_features.shape[1] != EXPECTED_RAW_DIM:
-#                 print(f"⚠️ Fixing behavioral shape: {behavioral_features.shape} -> {EXPECTED_RAW_DIM}")
-                
-#                 if behavioral_features.shape[1] < EXPECTED_RAW_DIM:
-#                     # Pad if we somehow got less than 50 (rare error case)
-#                     padding = np.zeros((self.num_frames, EXPECTED_RAW_DIM - behavioral_features.shape[1]), dtype=np.float32)
-#                     behavioral_features = np.concatenate([behavioral_features, padding], axis=1)
-#                 else:
-#                     # Crop if we got more
-#                     behavioral_features = behavioral_features[:, :EXPECTED_RAW_DIM]
-
-#             # 4. EXTRACT AUDIO
-#             audio_wave, audio_mel = self._extract_audio(video_path)
-
-#             # 5. PREPARE TENSORS
-#             # Convert face frames to tensor: (T, H, W, C) -> (C, T, H, W)
-#             frames_tensor = torch.from_numpy(frames).permute(3, 0, 1, 2).float()
-#             # Normalize to [-1, 1]
-#             frames_tensor = (frames_tensor / 255.0 - 0.5) * 2.0
-
-#             # Convert behavioral features to tensor
-#             behavioral_tensor = torch.from_numpy(behavioral_features).float()
-            
-#             # 6. DEBUG (Optional)
-#             if idx % 50 == 0:
-#                 print(f"✅ Loaded {os.path.basename(video_path)} | Feat Shape: {behavioral_tensor.shape}")
-
-#             sample = {
-#                 'vision_behaviour': behavioral_tensor,  # (T=64, 64)
-#                 'vision_face': frames_tensor,           # (C=3, T=64, H=160, W=160)
-#                 'audio_mel': audio_mel,                 # (C=3, n_mels=128, time)
-#                 'audio_wave': audio_wave,               # (audio_length,)
-#                 'label': torch.tensor(label, dtype=torch.long),
-#                 'videoname': os.path.basename(video_path)
-#             }
-
-#             return sample
-
-#         except Exception as e:
-#             print(f"❌ Error processing {os.path.basename(video_path)}: {str(e)}")
-#             return self._get_dummy_sample(label, video_path)
-
-class VideoDeceptionDataset(Dataset):
+class PreprocessedVideoDataset(Dataset):
     """
-    Dataset for loading video files and extracting multimodal features.
-
-    Expected directory structure:
-    data_root/
-        truthful/
-            video1.mp4
-            video2.avi
-            ...
-        deceptive/
-            video1.mp4
-            video2.avi
-            ...
+    Dataset for loading pre-extracted .pt feature files.
+    
+    Handles mapping from CSV (raw video paths) to .pt files (preprocessed features).
+    
+    CSV Example:
+        s3://bucket/dataset/video/deceptive/video.mkv, deceptive
+    
+    Maps to:
+        {data_root}/video.pt
+        e.g., /local/path/train/video.pt
+    
+    Expected .pt file structure:
+    {
+        'vision_behaviour': torch.Tensor [T, 50],
+        'vision_face': torch.Tensor [3, T, H, W] (uint8),
+        'audio_mel': torch.Tensor [3, 128, time_steps],
+        'audio_wave': torch.Tensor [audio_length],
+        'label': torch.Tensor (long),
+        'videoname': str
+    }
     """
 
-    def __init__(self, csv_file=None, data_root=None, annotation_file=None,
-                 num_frames=50, frame_size=(160, 160),
-                 audio_length=16000, sample_rate=16000,
-                 n_mels=128, mode='train', model_path='face_landmarker.task'):
+    def __init__(self, csv_file=None, data_root=None, mode='train'):
         """
         Args:
-            data_root: Root directory with truthful/deceptive subdirectories
-            annotation_file: Path to file with video paths and labels
-            num_frames: Number of frames to sample (T=64 for behavioral features)
-            frame_size: Target size for face frames (H, W)
-            audio_length: Length of audio to sample
-            sample_rate: Audio sample rate
-            n_mels: Number of mel frequency bins
+            csv_file: Path to CSV with columns [s3_path, label]
+                     e.g., train.csv with paths like:
+                     s3://bucket/dataset/video/deceptive/video.mkv, deceptive
+            
+            data_root: Root directory containing the .pt files
+                      This is where your EXTRACTED features are stored.
+                      e.g., /opt/ml/input/data/train/
+                      or s3://bucket/dataset/video/precomputed_features/train/
+            
             mode: 'train', 'val', or 'test'
+        
+        Usage:
+            # Training
+            train_dataset = PreprocessedVideoDataset(
+                csv_file='/path/to/train.csv',
+                data_root='/local/mount/train/',  # Contains .pt files
+                mode='train'
+            )
+            
+            # Validation
+            val_dataset = PreprocessedVideoDataset(
+                csv_file='/path/to/validation.csv',
+                data_root='/local/mount/validation/',  # Contains .pt files
+                mode='val'
+            )
         """
-        self.num_frames = num_frames
-        self.frame_size = frame_size
-        self.audio_length = audio_length
-        self.sample_rate = sample_rate
-        self.n_mels = n_mels
+        self.data_root = data_root
         self.mode = mode
-        self.video_list = []
-        self.labels = []
-
-        ## --------- face task -------- ##
-        self.model_path = model_path
-        self.landmarker = None
-        ## --------------------------- ##
-
-        # self.face_mesh = None
-        # self.face_mesh_initialized = False
-        # self.mp_face_mesh = mp.solutions.face_mesh
-
-         # --- LOAD DATA LOGIC ---
+        self.samples = []
+        
+        # Label mapping (same as your extraction code)
+        self.label_map = {'truthful': 0, 'deceptive': 1, 'truth': 0, 'lie': 1}
+        
+        # Load data
         if csv_file is not None and os.path.exists(csv_file):
             self._load_from_csv(csv_file, data_root)
         elif data_root is not None:
             self._load_from_directory(data_root)
         else:
             raise ValueError("Either csv_file or data_root must be provided")
-
-    def _init_mediapipe(self):
-        """
-        Initialize MediaPipe V2 FaceLandmarker with Blendshapes and Transformation Matrix.
-        """
-        if self.landmarker is not None:
-            return
-
-        try:
-            from mediapipe.tasks import python
-            from mediapipe.tasks.python import vision
-
-            # Use the full path to avoid 'name python is not defined' errors
-            BaseOptions = mp.tasks.BaseOptions
-            FaceLandmarker = mp.tasks.vision.FaceLandmarker
-            FaceLandmarkerOptions = mp.tasks.vision.FaceLandmarkerOptions
-            VisionRunningMode = mp.tasks.vision.RunningMode
-
-            # Create options
-            base_options = BaseOptions(model_asset_path=self.model_path)
-            options = FaceLandmarkerOptions(
-                base_options=base_options,
-                output_face_blendshapes=True,             # Required for AUs/Emotions
-                output_facial_transformation_matrixes=True, # Required for Gaze/Pose
-                running_mode=VisionRunningMode.IMAGE,
-                num_faces=1,
-                min_face_detection_confidence=0.5
-            )
-            self.landmarker = vision.FaceLandmarker.create_from_options(options)
-            print("✅ MediaPipe V2 FaceLandmarker initialized")
-        except Exception as e:
-            print(f"❌ Failed to init MediaPipe V2: {e}")
-            self.landmarker = None
-    
-    # def _map_mp_v2_to_features(self, blendshapes, matrix):
-    #         """
-    #         Maps MediaPipe V2 Scale-Invariant outputs to MMPDA 50-dim vector.
-    #         """
-    #         # Convert list of categories to dict for O(1) lookup
-    #         bs = {b.category_name: b.score for b in blendshapes}
-            
-    #         # --- 1. ACTION UNITS (0-34) ---
-    #         # Direct mapping of 0-1 scores. No pixel distance bias.
-    #         au = np.zeros(35, dtype=np.float32)
-            
-    #         # Brows
-    #         au[0] = bs.get('browInnerUp', 0)
-    #         au[1] = (bs.get('browOuterUpLeft', 0) + bs.get('browOuterUpRight', 0)) / 2
-    #         au[2] = (bs.get('browDownLeft', 0) + bs.get('browDownRight', 0)) / 2
-            
-    #         # Eyes
-    #         au[3] = (bs.get('eyeWideLeft', 0) + bs.get('eyeWideRight', 0)) / 2
-    #         au[4] = (bs.get('cheekSquintLeft', 0) + bs.get('cheekSquintRight', 0)) / 2
-    #         au[5] = (bs.get('eyeSquintLeft', 0) + bs.get('eyeSquintRight', 0)) / 2
-    #         au[6] = (bs.get('noseSneerLeft', 0) + bs.get('noseSneerRight', 0)) / 2
-            
-    #         # Mouth
-    #         au[7] = (bs.get('mouthUpperUpLeft', 0) + bs.get('mouthUpperUpRight', 0)) / 2
-    #         au[8] = (bs.get('mouthSmileLeft', 0) + bs.get('mouthSmileRight', 0)) / 2
-    #         au[9] = (bs.get('mouthDimpleLeft', 0) + bs.get('mouthDimpleRight', 0)) / 2
-    #         au[10] = (bs.get('mouthFrownLeft', 0) + bs.get('mouthFrownRight', 0)) / 2
-    #         au[11] = bs.get('mouthShrugLower', 0)
-    #         au[12] = bs.get('mouthPucker', 0)
-    #         au[13] = (bs.get('mouthStretchLeft', 0) + bs.get('mouthStretchRight', 0)) / 2
-    #         au[14] = bs.get('jawOpen', 0)
-    #         au[15] = bs.get('mouthClose', 0) # Approximation for lips part
-    #         au[16] = (bs.get('eyeBlinkLeft', 0) + bs.get('eyeBlinkRight', 0)) / 2
-            
-    #         # Fill remaining slots 17-34 with meaningful shapes to maintain density
-    #         extras = ['mouthFunnel', 'mouthPressLeft', 'mouthPressRight', 'mouthRollUpper', 
-    #                 'mouthRollLower', 'mouthShrugUpper', 'jawLeft', 'jawRight', 'jawForward',
-    #                 'cheekPuff', 'mouthLowerDownLeft', 'mouthLowerDownRight']
-    #         for i, name in enumerate(extras):
-    #             if 17 + i < 35: au[17 + i] = bs.get(name, 0)
-
-    #         # --- 2. GAZE & POSE (35-42) ---
-    #         # Derived from Transformation Matrix 
-    #         m = np.array(matrix) # Shape (16,)
-            
-    #         # Extract Euler Angles (Yaw, Pitch, Roll)
-    #         # Assuming standard rotation matrix extraction
-    #         # PITCH (X-axis rot), YAW (Y-axis rot), ROLL (Z-axis rot)
-            
-    #         # Simple extraction from Rotation Matrix elements
-    #         # r11=0, r12=1, r13=2, r21=4, r22=5, r23=6, r31=8, r32=9, r33=10
-    #         import math
-    #         sy = math.sqrt(m[0] * m[0] + m[4] * m[4])
-    #         if sy > 1e-6:
-    #             pitch = math.atan2(m[9], m[10])
-    #             yaw = math.atan2(-m[8], sy)
-    #             roll = math.atan2(m[4], m[0])
-    #         else:
-    #             pitch = math.atan2(-m[6], m[5])
-    #             yaw = math.atan2(-m[8], sy)
-    #             roll = 0
-
-    #         # Eye Gaze (Relative to head)
-    #         # eyeLookIn/Out/Up/Down are 0-1 scores
-    #         l_dx = bs.get('eyeLookInLeft', 0) - bs.get('eyeLookOutLeft', 0)
-    #         l_dy = bs.get('eyeLookUpLeft', 0) - bs.get('eyeLookDownLeft', 0)
-    #         r_dx = bs.get('eyeLookOutRight', 0) - bs.get('eyeLookInRight', 0)
-    #         r_dy = bs.get('eyeLookUpRight', 0) - bs.get('eyeLookDownRight', 0)
-            
-    #         gaze = np.array([
-    #             pitch, yaw, roll,       # Head Pose
-    #             l_dx, l_dy,             # Left Eye Gaze
-    #             r_dx, r_dy,             # Right Eye Gaze
-    #             abs(l_dx - r_dx)        # Convergence
-    #         ], dtype=np.float32)
-
-    #         # --- 3. EMOTIONS (43-47) ---
-    #         # Heuristics based on combination of AUs
-    #         happy = bs.get('mouthSmileLeft', 0) * 0.5 + bs.get('mouthSmileRight', 0) * 0.5
-    #         sad = (bs.get('mouthFrownLeft', 0) + bs.get('browDownLeft', 0)) / 2.0
-    #         surprise = (bs.get('browInnerUp', 0) + bs.get('jawOpen', 0)) / 2.0
-    #         fear = (bs.get('mouthStretchLeft', 0) + bs.get('browInnerUp', 0)) / 2.0
-    #         anger = (bs.get('browDownLeft', 0) + bs.get('jawForward', 0)) / 2.0
-            
-    #         emotions = np.array([happy, sad, surprise, fear, anger], dtype=np.float32)
-
-    #         # --- 4. VALENCE / AROUSAL (48-49) ---
-    #         val = happy - max(sad, anger, fear)
-    #         arousal = max(happy, surprise, anger, fear)
-            
-    #         va = np.array([val, arousal], dtype=np.float32)
-
-    #         # Combine all
-    #         return np.concatenate([au, gaze, emotions, va])
-
-    def _map_mp_v2_to_features(self, blendshapes, matrix):
-        """
-        Maps MediaPipe V2 Scale-Invariant outputs to MMPDA 50-dim vector.
-        """
-        # 1. BLENDSHAPES (0-34)
-        bs = {b.category_name: b.score for b in blendshapes}
         
-        au = np.zeros(35, dtype=np.float32)
-        au[0] = bs.get('browInnerUp', 0)
-        au[1] = (bs.get('browOuterUpLeft', 0) + bs.get('browOuterUpRight', 0)) / 2
-        au[2] = (bs.get('browDownLeft', 0) + bs.get('browDownRight', 0)) / 2
-        au[3] = (bs.get('eyeWideLeft', 0) + bs.get('eyeWideRight', 0)) / 2
-        au[4] = (bs.get('cheekSquintLeft', 0) + bs.get('cheekSquintRight', 0)) / 2
-        au[5] = (bs.get('eyeSquintLeft', 0) + bs.get('eyeSquintRight', 0)) / 2
-        au[6] = (bs.get('noseSneerLeft', 0) + bs.get('noseSneerRight', 0)) / 2
-        au[7] = (bs.get('mouthUpperUpLeft', 0) + bs.get('mouthUpperUpRight', 0)) / 2
-        au[8] = (bs.get('mouthSmileLeft', 0) + bs.get('mouthSmileRight', 0)) / 2
-        au[9] = (bs.get('mouthDimpleLeft', 0) + bs.get('mouthDimpleRight', 0)) / 2
-        au[10] = (bs.get('mouthFrownLeft', 0) + bs.get('mouthFrownRight', 0)) / 2
-        au[11] = bs.get('mouthShrugLower', 0)
-        au[12] = bs.get('mouthPucker', 0)
-        au[13] = (bs.get('mouthStretchLeft', 0) + bs.get('mouthStretchRight', 0)) / 2
-        au[14] = bs.get('jawOpen', 0)
-        au[15] = bs.get('mouthClose', 0)
-        au[16] = (bs.get('eyeBlinkLeft', 0) + bs.get('eyeBlinkRight', 0)) / 2
-        
-        extras = ['mouthFunnel', 'mouthPressLeft', 'mouthPressRight', 'mouthRollUpper', 
-                  'mouthRollLower', 'mouthShrugUpper', 'jawLeft', 'jawRight', 'jawForward',
-                  'cheekPuff', 'mouthLowerDownLeft', 'mouthLowerDownRight']
-        for i, name in enumerate(extras):
-            if 17 + i < 35: au[17 + i] = bs.get(name, 0)
-
-        # 2. GAZE & POSE (35-42)
-        # Fix: Ensure matrix is a flat array of 16 elements
-        m = np.array(matrix)
-        if m.shape == (4, 4):
-            m = m.flatten()  # <--- CRITICAL FIX
-            
-        # Now m is [R00, R01, R02, T0, R10...] (16 elements)
-        # Calculate Euler Angles (Rotation Matrix decomposition)
-        import math
-        
-        # Standard calculation for Pitch, Yaw, Roll from 4x4 Model Matrix
-        # R10(4), R00(0)
-        sy = math.sqrt(m[0] * m[0] + m[4] * m[4])
-        
-        if sy > 1e-6:
-            # R21(9), R22(10) -> Pitch
-            pitch = math.atan2(m[9], m[10])
-            # R20(8) -> Yaw
-            yaw = math.atan2(-m[8], sy)
-            # R10(4), R00(0) -> Roll
-            roll = math.atan2(m[4], m[0])
-        else:
-            # Gimbal lock case
-            pitch = math.atan2(-m[6], m[5])
-            yaw = math.atan2(-m[8], sy)
-            roll = 0
-
-        # Eye Gaze Offsets
-        l_dx = bs.get('eyeLookInLeft', 0) - bs.get('eyeLookOutLeft', 0)
-        l_dy = bs.get('eyeLookUpLeft', 0) - bs.get('eyeLookDownLeft', 0)
-        r_dx = bs.get('eyeLookOutRight', 0) - bs.get('eyeLookInRight', 0)
-        r_dy = bs.get('eyeLookUpRight', 0) - bs.get('eyeLookDownRight', 0)
-        
-        gaze = np.array([
-            pitch, yaw, roll,       # Head Pose
-            l_dx, l_dy,             # Left Eye
-            r_dx, r_dy,             # Right Eye
-            abs(l_dx - r_dx)        # Convergence
-        ], dtype=np.float32)
-
-        # 3. EMOTIONS (43-47)
-        happy = bs.get('mouthSmileLeft', 0) * 0.5 + bs.get('mouthSmileRight', 0) * 0.5
-        sad = (bs.get('mouthFrownLeft', 0) + bs.get('browDownLeft', 0)) / 2.0
-        surprise = (bs.get('browInnerUp', 0) + bs.get('jawOpen', 0)) / 2.0
-        fear = (bs.get('mouthStretchLeft', 0) + bs.get('browInnerUp', 0)) / 2.0
-        anger = (bs.get('browDownLeft', 0) + bs.get('jawForward', 0)) / 2.0
-        
-        emotions = np.array([happy, sad, surprise, fear, anger], dtype=np.float32)
-
-        # 4. VALENCE / AROUSAL (48-49)
-        val = happy - max(sad, anger, fear)
-        arousal = max(happy, surprise, anger, fear)
-        va = np.array([val, arousal], dtype=np.float32)
-
-        return np.concatenate([au, gaze, emotions, va])
+        print(f"✅ Loaded {len(self.samples)} preprocessed samples for {mode} set")
+        if len(self.samples) == 0:
+            raise ValueError(f"❌ No .pt files found! Check data_root: {data_root}")
 
     def _load_from_csv(self, csv_file, data_root):
-            """
-            Load paths and labels from CSV, converting S3 paths to local container paths.
-            Input CSV format: [s3_path, label] with a header.
-            """
-            print(f"📄 Loading dataset from CSV: {csv_file}")
+        """
+        Load preprocessed .pt files based on CSV mappings.
+        
+        CSV format: [s3_path, label]
+        Example row: s3://bucket/dataset/video/deceptive/video.mkv, deceptive
+        
+        Mapping logic:
+        1. Extract filename from S3 path: video.mkv
+        2. Remove extension: video
+        3. Add .pt extension: video.pt
+        4. Look for file in data_root: {data_root}/video.pt
+        """
+        print(f"📄 Loading from CSV: {csv_file}")
+        print(f"📂 Looking for .pt files in: {data_root}")
+        
+        try:
+            # Read CSV
+            df = pd.read_csv(csv_file)
             
-            # Label mapping
-            label_map = {'truthful': 0, 'deceptive': 1, 'truth': 0, 'lie': 1}
-
-            try:
-                # Read CSV. Detect the header automatically
-                df = pd.read_csv(csv_file)
-                
-                # Ensure we have columns. If not, fallback to index.
-                if 's3_path' not in df.columns and 'path' not in df.columns:
-                    # If pandas didn't detect header, reload assuming first row is data
-                    df = pd.read_csv(csv_file, header=None)
-                    df.columns = ['path', 'label']
-                else:
-                    # Normalize column names to 'path' and 'label'
-                    cols = list(df.columns)
-                    # Rename the column that looks like a path (e.g. 's3_path') to 'path'
-                    rename_map = {c: 'path' for c in cols if 'path' in c.lower()}
-                    # Rename the column that looks like a label to 'label'
-                    rename_map.update({c: 'label' for c in cols if 'label' in c.lower()})
-                    df.rename(columns=rename_map, inplace=True)
-
-            except Exception as e:
-                print(f"❌ Error reading CSV with Pandas: {e}")
-                return
-
-            valid_count = 0
-            missing_count = 0
-
-            for index, row in df.iterrows():
-                raw_path = str(row['path']).strip()
-                label_raw = str(row['label']).strip().lower()
-
-                # Map Label
-                if label_raw in label_map:
-                    label = label_map[label_raw]
-                else:
-                    # Skip unknown labels
-                    continue
-
-                # CONSTRUCT LOCAL PATH
-                # Input: s3://bucket/.../dataset/video/deceptive/video.mkv
-                # Goal:  /opt/ml/input/data/training/deceptive/video.mkv
-                
-                filename = os.path.basename(raw_path) # "video.mkv"
-                
-                # Determine subfolder based on the path string (safest) or label
-                if '/truthful/' in raw_path.lower():
-                    subfolder = 'truthful'
-                elif '/deceptive/' in raw_path.lower():
-                    subfolder = 'deceptive'
-                else:
-                    # Fallback: guess folder based on label
-                    subfolder = 'truthful' if label == 0 else 'deceptive'
-
-                # Construct the final local path
-                if data_root:
-                    final_path = os.path.join(data_root, subfolder, filename)
-                else:
-                    # Fallback for local testing if data_root isn't set
-                    final_path = raw_path
-
-                # Verify existence
-                if os.path.exists(final_path):
-                    self.video_list.append(final_path)
-                    self.labels.append(label)
-                    valid_count += 1
-                else:
-                    if missing_count < 3: 
-                        print(f"⚠️ File not found: {final_path}")
-                        print(f"   (Original S3 path: {raw_path})")
-                    missing_count += 1
-
-            print(f"✅ Loaded {valid_count} videos.")
-            if missing_count > 0:
-                print(f"⚠️ Skipped {missing_count} missing files (check path mapping).")
+            # Handle column naming variations
+            if 's3_path' not in df.columns and 'path' not in df.columns:
+                # No header detected
+                df = pd.read_csv(csv_file, header=None)
+                df.columns = ['path', 'label']
+            else:
+                # Normalize column names
+                cols = list(df.columns)
+                rename_map = {c: 'path' for c in cols if 'path' in c.lower()}
+                rename_map.update({c: 'label' for c in cols if 'label' in c.lower()})
+                df.rename(columns=rename_map, inplace=True)
+        
+        except Exception as e:
+            print(f"❌ Error reading CSV: {e}")
+            return
+        
+        valid_count = 0
+        missing_count = 0
+        missing_examples = []
+        
+        for idx, row in df.iterrows():
+            # Get original video path and label
+            raw_path = str(row['path']).strip()
+            label_raw = str(row['label']).strip().lower()
+            
+            # Map label
+            if label_raw not in self.label_map:
+                if missing_count < 3:
+                    print(f"⚠️ Unknown label '{label_raw}' for {raw_path}")
+                continue
+            label = self.label_map[label_raw]
+            
+            # ========================================
+            # PATH MAPPING: S3 video → local .pt file
+            # ========================================
+            # Input:  s3://bucket/dataset/video/deceptive/TTTT_228.mkv
+            # Output: /local/train/TTTT_228.pt
+            
+            # Step 1: Extract filename from S3 path
+            filename = os.path.basename(raw_path)  # "TTTT_228.mkv"
+            
+            # Step 2: Remove video extension and add .pt
+            file_base = os.path.splitext(filename)[0]  # "TTTT_228"
+            pt_filename = f"{file_base}.pt"            # "TTTT_228.pt"
+            
+            # Step 3: Construct full local path to .pt file
+            # The .pt files are stored FLAT in data_root (no subdirectories)
+            pt_path = os.path.join(data_root, pt_filename)
+            
+            # Step 4: Verify file exists
+            if os.path.exists(pt_path):
+                self.samples.append({
+                    'pt_path': pt_path,
+                    'label': label,
+                    'filename': filename,
+                    'original_path': raw_path
+                })
+                valid_count += 1
+            else:
+                if missing_count < 5:  # Show first 5 missing files
+                    missing_examples.append({
+                        'csv_path': raw_path,
+                        'expected_pt': pt_path
+                    })
+                missing_count += 1
+        
+        # Report results
+        print(f"✅ Found {valid_count} valid .pt files")
+        
+        if missing_count > 0:
+            print(f"\n⚠️ WARNING: {missing_count} .pt files not found!")
+            print("   This usually means:")
+            print("   1. Feature extraction didn't complete for all videos")
+            print("   2. data_root path is incorrect")
+            print("   3. CSV references videos that weren't extracted")
+            
+            if missing_examples:
+                print("\n   Examples of missing files:")
+                for ex in missing_examples[:3]:
+                    print(f"   CSV entry: {ex['csv_path']}")
+                    print(f"   Expected:  {ex['expected_pt']}")
+                    print()
 
     def _load_from_directory(self, data_root):
-        """Load videos from directory structure"""
+        """
+        Load all .pt files from directory (fallback method).
+        
+        Useful when you don't have a CSV, just a folder of .pt files.
+        
+        Assumes structure:
+        data_root/
+            video1.pt
+            video2.pt
+            ...
+        
+        Labels are inferred from filenames containing 'deceptive'/'truthful'.
+        """
+        print(f"📂 Loading all .pt files from: {data_root}")
+        
         data_root = Path(data_root)
-
-        # Load truthful videos (label 0)
-        truthful_dir = data_root / 'truthful'
-        if truthful_dir.exists():
-            for video_file in truthful_dir.glob('*'):
-                if video_file.suffix.lower() in ['.mp4', '.avi', '.mov', '.mkv', '.wmv']:
-                    self.video_list.append(str(video_file))
-                    self.labels.append(0)
-
-        # Load deceptive videos (label 1)
-        deceptive_dir = data_root / 'deceptive'
-        if deceptive_dir.exists():
-            for video_file in deceptive_dir.glob('*'):
-                if video_file.suffix.lower() in ['.mp4', '.avi', '.mov', '.mkv', '.wmv']:
-                    self.video_list.append(str(video_file))
-                    self.labels.append(1)
-
-        print(f"Loaded {len(self.video_list)} videos from {data_root}")
-        print(f"Truthful: {self.labels.count(0)}, Deceptive: {self.labels.count(1)}")
-
-    def _count_frames_manually(self, cap):
-        """
-        Manually count frames for videos with corrupted metadata
-        """
-        count = 0
-        while True:
-            ret, _ = cap.read()
-            if not ret:
-                break
-            count += 1
-            if count > 10000:  # Safety limit
-                break
-        return count
-
-    def _load_from_annotation(self, annotation_file):
-        """Load videos from annotation file"""
-        with open(annotation_file, 'r') as f:
-            lines = f.readlines()
-
-        for line in lines:
-            line = line.strip()
-            if not line or line.startswith('#'):
-                continue
-
-            parts = line.split(',')
-            if len(parts) >= 2:
-                video_path = parts[0].strip()
-                label = int(parts[1].strip())
-
-                if os.path.exists(video_path):
-                    self.video_list.append(video_path)
-                    self.labels.append(label)
-
-        print(f"Loaded {len(self.video_list)} videos from {annotation_file}")
-        print(f"Truthful: {self.labels.count(0)}, Deceptive: {self.labels.count(1)}")
-    
-    def _get_dummy_sample(self, label, video_path):
-        """
-        Return a safe dummy sample when video processing fails completely
-        """
-        return {
-            'vision_behaviour': torch.zeros(self.num_frames, 50, dtype=torch.float32),
-            'vision_face': torch.zeros(3, self.num_frames, self.frame_size[0], self.frame_size[1], dtype=torch.float32),
-            'audio_mel': torch.zeros(3, self.n_mels, self.audio_length // 160 + 1, dtype=torch.float32),
-            'audio_wave': torch.zeros(self.audio_length, dtype=torch.float32),
-            'label': torch.tensor(label, dtype=torch.long),
-            'videoname': os.path.basename(video_path) + '_DUMMY'
-        }
-
-    def _extract_audio(self, video_path):
-        """
-        Extract audio from video - WORKS WITH ALL FORMATS
-        """
-        try:
-            import torchaudio
-            import subprocess
-            import tempfile
+        
+        if not data_root.exists():
+            print(f"❌ Directory does not exist: {data_root}")
+            return
+        
+        pt_files = list(data_root.glob('*.pt'))
+        
+        if len(pt_files) == 0:
+            print(f"⚠️ No .pt files found in {data_root}")
+            return
+        
+        for pt_file in pt_files:
+            # Try to infer label from filename
+            filename = pt_file.stem.lower()
             
-            # Try direct loading first
-            try:
-                waveform, sample_rate = torchaudio.load(video_path)
-            except:
-                # Fallback: extract audio to temp wav file using ffmpeg
-                with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_audio:
-                    temp_path = temp_audio.name
-                
-                try:
-                    # Extract audio using ffmpeg (handles all video formats)
-                    subprocess.run([
-                        'ffmpeg', '-i', video_path, '-vn', '-acodec', 'pcm_s16le',
-                        '-ar', str(self.sample_rate), '-ac', '1', '-y', temp_path
-                    ], check=True, capture_output=True)
-                    
-                    waveform, sample_rate = torchaudio.load(temp_path)
-                    os.remove(temp_path)
-                except Exception as e:
-                    print(f"⚠️ Audio extraction failed for {os.path.basename(video_path)}: {str(e)}")
-                    # Return silent audio
-                    waveform = torch.zeros(1, self.audio_length)
-                    sample_rate = self.sample_rate
-            
-            # Resample if necessary
-            if sample_rate != self.sample_rate:
-                resampler = torchaudio.transforms.Resample(sample_rate, self.sample_rate)
-                waveform = resampler(waveform)
-            
-            # Convert to mono if stereo
-            if waveform.shape[0] > 1:
-                waveform = torch.mean(waveform, dim=0, keepdim=True)
-            
-            # Pad or truncate to target length
-            if waveform.shape[1] < self.audio_length:
-                waveform = torch.nn.functional.pad(waveform, (0, self.audio_length - waveform.shape[1]))
+            if 'deceptive' in filename or 'lie' in filename:
+                label = 1
+            elif 'truthful' in filename or 'truth' in filename:
+                label = 0
             else:
-                waveform = waveform[:, :self.audio_length]
+                # Default to 0 if unclear
+                print(f"⚠️ Cannot infer label for {pt_file.name}, defaulting to 0")
+                label = 0
             
-            # Generate mel spectrogram
-            mel_transform = torchaudio.transforms.MelSpectrogram(
-                sample_rate=self.sample_rate,
-                n_mels=self.n_mels,
-                n_fft=400,
-                hop_length=160
-            )
-            mel_spec = mel_transform(waveform)
-            
-            # Convert to 3-channel format (for compatibility)
-            mel_spec = mel_spec.repeat(3, 1, 1)
-            
-            return waveform.squeeze(0).numpy(), mel_spec.numpy()
-        
-        except Exception as e:
-            print(f"❌ Audio extraction error for {os.path.basename(video_path)}: {str(e)}")
-            # Return silent audio
-            return (np.zeros(self.audio_length, dtype=np.float32),
-                    np.zeros((3, self.n_mels, self.audio_length // 160 + 1), dtype=np.float32))
-
-    def _sample_frames(self, video_path):
-        """
-        Sample frames uniformly from video with FFmpeg fallback for problematic formats
-        """
-        video_name = os.path.basename(video_path)
-        
-        # Check if file exists
-        if not os.path.exists(video_path):
-            print(f"❌ File does not exist: {video_path}")
-            return None
-        
-        file_size = os.path.getsize(video_path)
-        print(f"📹 Processing: {video_name} ({file_size/(1024*1024):.2f} MB)")
-        
-        # First attempt: OpenCV direct reading
-        cap = cv2.VideoCapture(video_path)
-        
-        if not cap.isOpened():
-            print(f"⚠️ OpenCV failed to open {video_name}, trying FFmpeg fallback...")
-            self.cap_release_safe(cap)
-            return self._sample_frames_ffmpeg(video_path)
-        
-        try:
-            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            fps = cap.get(cv2.CAP_PROP_FPS)
-            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            
-            print(f"   Frames: {total_frames}, FPS: {fps:.1f}, Size: {width}x{height}")
-            
-            # Handle invalid metadata
-            if total_frames <= 0 or fps <= 0:
-                print(f"   ⚠️ Invalid metadata, trying FFmpeg fallback...")
-                cap.release()
-                return self._sample_frames_ffmpeg(video_path)
-            
-            # Test reading first frame
-            ret, test_frame = cap.read()
-            if not ret or test_frame is None:
-                print(f"   ❌ Cannot read frames, trying FFmpeg fallback...")
-                cap.release()
-                return self._sample_frames_ffmpeg(video_path)
-            
-            print(f"   ✅ First frame OK: {test_frame.shape}")
-            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)  # Reset
-            
-            # Determine sampling indices
-            if total_frames < self.num_frames:
-                print(f"   ⚠️ Only {total_frames} frames, need {self.num_frames} (will duplicate)")
-                indices = np.linspace(0, max(0, total_frames - 1), self.num_frames).astype(int)
-            else:
-                indices = np.linspace(0, total_frames - 1, self.num_frames).astype(int)
-            
-            frames = []
-            last_valid_frame = None
-            failed_reads = 0
-            
-            for idx in indices:
-                cap.set(cv2.CAP_PROP_POS_FRAMES, int(idx))
-                ret, frame = cap.read()
-                
-                if ret and frame is not None and frame.size > 0:
-                    # Resize and convert
-                    # frame = cv2.resize(frame, (self.frame_size[1], self.frame_size[0]))
-                    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    frames.append(frame)
-                    last_valid_frame = frame.copy()
-                else:
-                    failed_reads += 1
-                    # Use last valid frame or black frame
-                    if last_valid_frame is not None:
-                        frames.append(last_valid_frame.copy())
-                    else:
-                        frames.append(np.zeros((self.frame_size[0], self.frame_size[1], 3), dtype=np.uint8))
-            
-            cap.release()
-            
-            if failed_reads > 0:
-                print(f"   ⚠️ Failed to read {failed_reads}/{len(indices)} frames (used fallback)")
-            
-            # If too many failures, try FFmpeg
-            if failed_reads > len(indices) // 2:
-                print(f"   ❌ Too many failed reads ({failed_reads}/{len(indices)}), trying FFmpeg...")
-                return self._sample_frames_ffmpeg(video_path)
-            
-            # Validate frame count
-            if len(frames) != self.num_frames:
-                while len(frames) < self.num_frames:
-                    frames.append(frames[-1].copy() if frames else 
-                                np.zeros((self.frame_size[0], self.frame_size[1], 3), dtype=np.uint8))
-                frames = frames[:self.num_frames]
-            
-            result = np.array(frames, dtype=np.uint8)
-            print(f"   ✅ Loaded {self.num_frames} frames, shape: {result.shape}")
-            
-            return result
-        
-        except Exception as e:
-            print(f"   ❌ Exception: {str(e)}")
-            cap.release()
-            # Try FFmpeg as last resort
-            print(f"   Trying FFmpeg fallback...")
-            return self._sample_frames_ffmpeg(video_path)
-
-    def cap_release_safe(self, cap):
-        """Safely release VideoCapture"""
-        try:
-            if cap is not None:
-                cap.release()
-        except:
-            pass
-    
-    def _sample_frames_ffmpeg(self, video_path):
-        """
-        Sample frames using FFmpeg (works with ALL video formats: mp4, mkv, wmv, avi, etc.)
-        This is more robust than OpenCV for problematic codecs
-        """
-        video_name = os.path.basename(video_path)
-        print(f"   🔧 Using FFmpeg for: {video_name}")
-
-        # Check if FFmpeg is available
-        try:
-            subprocess.run(['ffmpeg', '-version'], capture_output=True, timeout=2, check=True)
-        except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
-            print(f"      ❌ FFmpeg not available, cannot process this video")
-            return None
-        
-        # Initialize default values
-        duration = 0.0
-        fps = 30.0
-        total_frames = self.num_frames * 2        
-
-        try:
-            # Get video duration and frame count using ffprobe
-            probe_cmd = [
-                'ffprobe', '-v', 'error',
-                '-select_streams', 'v:0',
-                '-count_packets',
-                '-show_entries', 'stream=nb_read_packets,duration,r_frame_rate',
-                '-of', 'csv=p=0',
-                video_path
-            ]
-            
-            try:
-                result = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=10)
-                if result.returncode == 0:
-                    parts = result.stdout.strip().split(',')
-                    if len(parts) >= 2:
-                        duration = float(parts[0]) if parts[0] else 0
-                        fps_str = parts[1] if len(parts) > 1 else "30/1"
-                        
-                        # Parse FPS (format: "30/1" or "29.97")
-                        if '/' in fps_str:
-                            num, den = map(float, fps_str.split('/'))
-                            fps = num / den if den > 0 else 30.0
-                        else:
-                            fps = float(fps_str) if fps_str else 30.0
-                        
-                        total_frames = int(duration * fps) if duration > 0 else self.num_frames * 2
-                        print(f"      Video info: {duration:.1f}s, {fps:.1f} FPS, ~{total_frames} frames")
-                    else:
-                        total_frames = self.num_frames * 2
-                else:
-                    total_frames = self.num_frames * 2
-            except:
-                total_frames = self.num_frames * 2
-            
-            # Calculate timestamps to extract
-            if total_frames < self.num_frames:
-                timestamps = np.linspace(0, max(0.1, duration - 0.1), self.num_frames)
-            else:
-                timestamps = np.linspace(0, duration - 0.1, self.num_frames) if duration > 0 else np.arange(self.num_frames) * 0.1
-            
-            frames = []
-            temp_dir = tempfile.mkdtemp()
-            
-            try:
-                # Extract frames at specific timestamps
-                for i, ts in enumerate(timestamps):
-                    output_file = os.path.join(temp_dir, f'frame_{i:04d}.jpg')
-                    
-                    # extract_cmd = [
-                    #     'ffmpeg', '-ss', str(ts), '-i', video_path,
-                    #     '-vframes', '1', '-vf', f'scale={self.frame_size[1]}:{self.frame_size[0]}',
-                    #     '-y', output_file
-                    # ]
-                    extract_cmd = [
-                        'ffmpeg', 
-                        '-ss', str(ts), 
-                        '-i', video_path,
-                        '-vframes', '1', 
-                        '-q:v', '2', # High quality jpeg
-                        '-y', output_file
-                    ]
-                    
-                    try:
-                        subprocess.run(extract_cmd, capture_output=True, timeout=5, check=False)
-                        
-                        if os.path.exists(output_file) and os.path.getsize(output_file) > 0:
-                            frame = cv2.imread(output_file)
-                            if frame is not None:
-                                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                                frames.append(frame)
-                            else:
-                                # Use last valid or black frame
-                                if frames:
-                                    frames.append(frames[-1].copy())
-                                else:
-                                    frames.append(np.zeros((self.frame_size[0], self.frame_size[1], 3), dtype=np.uint8))
-                        else:
-                            # Fallback
-                            if frames:
-                                frames.append(frames[-1].copy())
-                            else:
-                                frames.append(np.zeros((self.frame_size[0], self.frame_size[1], 3), dtype=np.uint8))
-                    
-                    except subprocess.TimeoutExpired:
-                        print(f"      ⚠️ Timeout extracting frame {i}")
-                        if frames:
-                            frames.append(frames[-1].copy())
-                        else:
-                            frames.append(np.zeros((self.frame_size[0], self.frame_size[1], 3), dtype=np.uint8))
-            
-            finally:
-                # Cleanup temp files
-                import shutil
-                try:
-                    shutil.rmtree(temp_dir)
-                except:
-                    pass
-            
-            # Ensure correct number of frames
-            if len(frames) == 0:
-                print(f"      ❌ FFmpeg failed to extract any frames")
-                return np.zeros((self.num_frames, self.frame_size[0], self.frame_size[1], 3), dtype=np.uint8)
-                # return None
-            
-            
-            while len(frames) < self.num_frames:
-                frames.append(frames[-1].copy())
-            
-            frames = frames[:self.num_frames]
-            
-            result = np.array(frames, dtype=np.uint8)
-            print(f"      ✅ FFmpeg extracted {len(frames)} frames, shape: {result.shape}")
-            
-            return result
-        
-        except Exception as e:
-            print(f"      ❌ FFmpeg fallback failed: {str(e)}")
-            import traceback
-            traceback.print_exc()
-            return None
-
-    # def _extract_behavioral_features(self, frames):
-    #     """
-    #     Extract 50 behavioral features per frame:
-    #     - 35 Action Units (AU)
-    #     - 8 Gaze features
-    #     - 5 Expression features
-    #     - 2 Valence/Arousal features
-        
-    #     Returns: (num_frames, 50) numpy array
-    #     """
-    #     # Initialize MediaPipe in the worker process
-    #     self._init_mediapipe()
-
-    #     all_features = []
-    #     faces_detected = 0
-
-    #     for frame_idx in range(len(frames)):
-    #         frame = frames[frame_idx]
-
-    #         # Ensure correct format and dimensions
-    #         if frame.shape[0] != self.frame_size[0] or frame.shape[1] != self.frame_size[1]:
-    #             frame = cv2.resize(frame, (self.frame_size[1], self.frame_size[0]))
-
-    #         # Ensure uint8 format for MediaPipe
-    #         if frame.dtype != np.uint8:
-    #             frame = frame.astype(np.uint8)
-
-    #         # Process with MediaPipe
-    #         results = self.face_mesh.process(frame)
-
-    #         if results.multi_face_landmarks and len(results.multi_face_landmarks) > 0:
-    #             landmarks = results.multi_face_landmarks[0].landmark
-    #             features = self._compute_features_from_landmarks(landmarks, frame.shape)
-    #             faces_detected += 1
-    #         else:
-    #             # No face detected, use zero features
-    #             features = np.zeros(50, dtype=np.float32)
-
-    #         # Validate: Ensure exactly 50 features
-    #         if features.shape != (50,):
-    #             print(f"⚠️ WARNING: Feature shape is {features.shape}, expected (50,)")
-    #             if features.shape[0] < 50:
-    #                 features = np.pad(features, (0, 50 - features.shape[0]), mode='constant')
-    #             else:
-    #                 features = features[:50]
-            
-    #         all_features.append(features)
-        
-    #     # Report detection rate occasionally
-    #     if random.random() < 0.05:  # 5% of videos
-    #         print(f"  Face detection: {faces_detected}/{len(frames)} frames")
-
-    #     return np.stack(all_features, axis=0)
-
-    def _process_mmpda_pipeline(self, raw_frames):
-        """
-        Process frames ONCE to get both features and face crops.
-        Optimized to avoid double MediaPipe inference.
-        """
-        self._init_mediapipe()
-
-        # Safety Check: If landmarker failed to load, return dummies immediately
-        if self.landmarker is None:
-            print("⚠️ Landmarker not loaded, returning zeros.")
-            # Return zeros in the expected shapes
-            # Crops: (T, H, W, 3), Features: (T, 50)
-            dummy_crops = np.zeros((len(raw_frames), self.frame_size[0], self.frame_size[1], 3), dtype=np.uint8)
-            dummy_feats = np.zeros((len(raw_frames), 50), dtype=np.float32)
-            return dummy_crops, dummy_feats
-        
-        final_features = []
-        final_crops = []
-        
-        for frame in raw_frames:
-            # Prepare MediaPipe Image
-            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame)
-            
-            # RUN INFERENCE
-            detection = self.landmarker.detect(mp_image)
-            
-            # Defaults
-            feat_vec = np.zeros(50, dtype=np.float32)
-            face_crop = np.zeros((self.frame_size[0], self.frame_size[1], 3), dtype=np.uint8)
-            
-            if detection.face_landmarks:
-                # 1. EXTRACT FEATURES (Using Blendshapes + Matrix)
-                blendshapes = detection.face_blendshapes[0]
-                matrix = detection.facial_transformation_matrixes[0]
-                feat_vec = self._map_mp_v2_to_features(blendshapes, matrix)
-                
-                # 2. CROP FACE (Using Landmarks)
-                landmarks = detection.face_landmarks[0]
-                h, w = frame.shape[:2]
-                
-                # Get bbox
-                x_coords = [lm.x for lm in landmarks]
-                y_coords = [lm.y for lm in landmarks]
-                x_min, x_max = min(x_coords) * w, max(x_coords) * w
-                y_min, y_max = min(y_coords) * h, max(y_coords) * h
-                
-                # Margin
-                margin_x = (x_max - x_min) * 0.2
-                margin_y = (y_max - y_min) * 0.2
-                
-                x1 = max(0, int(x_min - margin_x))
-                y1 = max(0, int(y_min - margin_y))
-                x2 = min(w, int(x_max + margin_x))
-                y2 = min(h, int(y_max + margin_y))
-                
-                crop = frame[y1:y2, x1:x2]
-                if crop.size != 0:
-                    face_crop = cv2.resize(crop, (self.frame_size[1], self.frame_size[0]))
-                else:
-                    face_crop = cv2.resize(frame, (self.frame_size[1], self.frame_size[0]))
-            else:
-                # No face: Resize full frame, zero features
-                face_crop = cv2.resize(frame, (self.frame_size[1], self.frame_size[0]))
-
-            final_features.append(feat_vec)
-            final_crops.append(face_crop)
-
-        return np.array(final_crops), np.array(final_features)
-
-    # def _compute_features_from_landmarks(self, landmarks, image_shape):
-    #     """
-    #     Compute 50-dimensional feature vector from MediaPipe 478 face landmarks:
-        
-    #     Feature breakdown:
-    #     [0:35]   - Action Units (35)
-    #     [35:43]  - Gaze features (8)
-    #     [43:48]  - Expression features (5)
-    #     [48:50]  - Valence/Arousal (2)
-    #     """
-    #     h, w = image_shape[:2]
-        
-    #     # Convert landmarks to numpy array (x, y, z coordinates normalized)
-    #     points = np.array([[lm.x * w, lm.y * h, lm.z * w] for lm in landmarks])
-        
-    #     features = []
-        
-    #     # ============================================================
-    #     # PART 1: ACTION UNITS (35 features)
-    #     # ============================================================
-        
-    #     # --- Eyes (12 features) ---
-    #     # AU5 (Upper Lid Raiser), AU7 (Lid Tightener), AU43 (Eyes Closed)
-    #     left_eye_openness = self._eye_aspect_ratio(points, side='left')
-    #     right_eye_openness = self._eye_aspect_ratio(points, side='right')
-        
-    #     # Eye widths
-    #     left_eye_width = np.linalg.norm(points[33] - points[133])
-    #     right_eye_width = np.linalg.norm(points[362] - points[263])
-        
-    #     # Inter-eye distance
-    #     eye_distance = np.linalg.norm(points[33] - points[263])
-        
-    #     # Upper/lower lid positions
-    #     left_upper_lid = np.linalg.norm(points[159] - points[145])
-    #     right_upper_lid = np.linalg.norm(points[386] - points[374])
-    #     left_lower_lid = np.linalg.norm(points[145] - points[153])
-    #     right_lower_lid = np.linalg.norm(points[374] - points[380])
-        
-    #     # Eye squint/tightening
-    #     left_eye_squint = np.linalg.norm(points[159] - points[153])
-    #     right_eye_squint = np.linalg.norm(points[386] - points[380])
-        
-    #     # Eye symmetry
-    #     eye_symmetry = abs(left_eye_width - right_eye_width) / (eye_distance + 1e-6)
-        
-    #     features.extend([
-    #         left_eye_openness, right_eye_openness, left_eye_width, right_eye_width,
-    #         eye_distance, left_upper_lid, right_upper_lid, left_lower_lid, right_lower_lid,
-    #         left_eye_squint, right_eye_squint, eye_symmetry
-    #     ])  # 12 features
-        
-    #     # --- Eyebrows (8 features) ---
-    #     # AU1 (Inner Brow Raiser), AU2 (Outer Brow Raiser), AU4 (Brow Lowerer)
-    #     left_brow_height = self._eyebrow_height(points, side='left')
-    #     right_brow_height = self._eyebrow_height(points, side='right')
-        
-    #     # Inner brow points
-    #     left_inner_brow = np.linalg.norm(points[70] - points[27])   # Left inner brow to nose bridge
-    #     right_inner_brow = np.linalg.norm(points[300] - points[27]) # Right inner brow to nose bridge
-        
-    #     # Outer brow points
-    #     left_outer_brow = np.linalg.norm(points[105] - points[33])  # Left outer brow to eye
-    #     right_outer_brow = np.linalg.norm(points[334] - points[263]) # Right outer brow to eye
-        
-    #     # Brow distance and angle
-    #     brow_distance = np.linalg.norm(points[70] - points[300])
-    #     brow_angle = np.arctan2(points[300][1] - points[70][1], 
-    #                             points[300][0] - points[70][0])
-        
-    #     features.extend([
-    #         left_brow_height, right_brow_height, left_inner_brow, right_inner_brow,
-    #         left_outer_brow, right_outer_brow, brow_distance, brow_angle
-    #     ])  # 8 features
-        
-    #     # --- Mouth (10 features) ---
-    #     # AU10 (Upper Lip Raiser), AU12 (Lip Corner Puller/Smile), AU15 (Lip Corner Depressor)
-    #     # AU20 (Lip Stretcher), AU23 (Lip Tightener), AU25 (Lips Part), AU26 (Jaw Drop)
-    #     mouth_aspect_ratio = self._mouth_aspect_ratio(points)
-        
-    #     # Mouth dimensions
-    #     mouth_width = np.linalg.norm(points[61] - points[291])
-    #     mouth_height = np.linalg.norm(points[13] - points[14])
-        
-    #     # Lip positions
-    #     upper_lip_center = np.linalg.norm(points[0] - points[13])
-    #     lower_lip_center = np.linalg.norm(points[17] - points[14])
-        
-    #     # Lip corners
-    #     left_corner_height = np.linalg.norm(points[61] - points[291]) 
-    #     right_corner_height = np.linalg.norm(points[291] - points[61])
-        
-    #     # Mouth opening and lip distance
-    #     mouth_opening = np.linalg.norm(points[13] - points[14])
-    #     lip_distance = np.linalg.norm(points[0] - points[17])
-        
-    #     # Mouth asymmetry
-    #     left_mouth = np.linalg.norm(points[61] - points[0])
-    #     right_mouth = np.linalg.norm(points[291] - points[0])
-    #     mouth_asymmetry = abs(left_mouth - right_mouth) / (mouth_width + 1e-6)
-        
-    #     features.extend([
-    #         mouth_aspect_ratio, mouth_width, mouth_height, upper_lip_center, lower_lip_center,
-    #         left_corner_height, right_corner_height, mouth_opening, lip_distance, mouth_asymmetry
-    #     ])  # 10 features
-        
-    #     # --- Nose and Cheeks (5 features) ---
-    #     # AU9 (Nose Wrinkler), AU11 (Nasolabial Deepener)
-    #     nose_width = np.linalg.norm(points[129] - points[358])
-    #     nose_tip_height = np.linalg.norm(points[1] - points[2])
-        
-    #     # Nasolabial folds (cheek to mouth)
-    #     left_nasolabial = np.linalg.norm(points[206] - points[61])
-    #     right_nasolabial = np.linalg.norm(points[426] - points[291])
-        
-    #     # Nose to chin
-    #     nose_to_chin = np.linalg.norm(points[1] - points[152])
-        
-    #     features.extend([
-    #         nose_width, nose_tip_height, left_nasolabial, right_nasolabial, nose_to_chin
-    #     ])  # 5 features
-        
-    #     # Total AU features: 12 + 8 + 10 + 5 = 35 
-        
-    #     # ============================================================
-    #     # PART 2: GAZE FEATURES (8 features)
-    #     # ============================================================
-        
-    #     # Head pose (pitch, yaw, roll)
-    #     pitch, yaw, roll = self._head_pose(points, w, h)
-        
-    #     # Eye gaze direction (simplified estimation)
-    #     left_eye_center = (points[33] + points[133]) / 2
-    #     right_eye_center = (points[362] + points[263]) / 2
-    #     nose_bridge = points[168]
-        
-    #     # Horizontal and vertical gaze for each eye
-    #     left_gaze_h = (left_eye_center[0] - nose_bridge[0]) / w
-    #     left_gaze_v = (left_eye_center[1] - nose_bridge[1]) / h
-    #     right_gaze_h = (right_eye_center[0] - nose_bridge[0]) / w
-    #     right_gaze_v = (right_eye_center[1] - nose_bridge[1]) / h
-        
-    #     # Gaze convergence (measure of focus)
-    #     gaze_convergence = abs(left_gaze_h - right_gaze_h)
-        
-    #     features.extend([
-    #         pitch, yaw, roll,
-    #         left_gaze_h, left_gaze_v, right_gaze_h, right_gaze_v,
-    #         gaze_convergence
-    #     ])  # 8 features
-        
-    #     # ============================================================
-    #     # PART 3: EXPRESSION FEATURES (5 features)
-    #     # ============================================================
-        
-    #     # Overall facial symmetry
-    #     symmetry = self._facial_symmetry(points)
-        
-    #     # Face dimensions
-    #     face_width = np.linalg.norm(points[234] - points[454])
-    #     face_height = np.linalg.norm(points[10] - points[152])
-        
-    #     # Expression activity indicators
-    #     upper_face_activity = (left_brow_height + right_brow_height) / 2
-    #     lower_face_activity = mouth_aspect_ratio
-        
-    #     features.extend([
-    #         symmetry, face_width, face_height, upper_face_activity, lower_face_activity
-    #     ])  # 5 features
-        
-    #     # ============================================================
-    #     # PART 4: VALENCE/AROUSAL (2 features)
-    #     # ============================================================
-        
-    #     # Valence: positive (smile) vs negative (frown)
-    #     # Use mouth corner positions relative to face center
-    #     mouth_corners_avg = (left_mouth + right_mouth) / 2
-    #     valence = mouth_corners_avg / (face_height + 1e-6)
-        
-    #     # Arousal: high (alert, wide eyes) vs low (calm, relaxed)
-    #     # Combine eye openness and mouth opening
-    #     arousal = (left_eye_openness + right_eye_openness + mouth_aspect_ratio) / 3.0
-        
-    #     features.extend([valence, arousal])  # 2 features
-        
-    #     # ============================================================
-    #     # FINALIZE
-    #     # ============================================================
-        
-    #     features = np.array(features, dtype=np.float32)
-        
-    #     # Sanity check
-    #     assert len(features) == 50, f"Expected 50 features, got {len(features)}"
-        
-    #     # Clip extreme values
-    #     features = np.clip(features, -100, 100)
-        
-    #     # Normalize
-    #     mean = features.mean()
-    #     std = features.std()
-    #     if std > 1e-6:
-    #         features = (features - mean) / std
-        
-    #     return features
-
-    # def _eye_aspect_ratio(self, points, side='left'):
-    #     """Calculate Eye Aspect Ratio (EAR) for blink detection"""
-    #     if side == 'left':
-    #         # Left eye landmarks
-    #         p1, p2, p3, p4, p5, p6 = 33, 160, 158, 133, 153, 144
-    #     else:
-    #         # Right eye landmarks
-    #         p1, p2, p3, p4, p5, p6 = 362, 385, 387, 263, 373, 380
-        
-    #     # Vertical distances
-    #     v1 = np.linalg.norm(points[p2] - points[p6])
-    #     v2 = np.linalg.norm(points[p3] - points[p5])
-        
-    #     # Horizontal distance
-    #     h = np.linalg.norm(points[p1] - points[p4])
-        
-    #     # EAR formula
-    #     ear = (v1 + v2) / (2.0 * h + 1e-6)
-    #     return ear
-
-    # def _eyebrow_height(self, points, side='left'):
-    #     """Calculate eyebrow height relative to eye"""
-    #     if side == 'left':
-    #         brow_point = points[70]   # Left eyebrow center
-    #         eye_point = points[33]    # Left eye inner corner
-    #     else:
-    #         brow_point = points[300]  # Right eyebrow center
-    #         eye_point = points[263]   # Right eye inner corner
-        
-    #     height = np.linalg.norm(brow_point - eye_point)
-    #     return height
-
-    # def _mouth_aspect_ratio(self, points):
-    #     """Calculate Mouth Aspect Ratio (MAR)"""
-    #     # Upper and lower lip center points
-    #     upper = points[13]
-    #     lower = points[14]
-        
-    #     # Left and right mouth corners
-    #     left = points[61]
-    #     right = points[291]
-        
-    #     # Vertical distance
-    #     v = np.linalg.norm(upper - lower)
-        
-    #     # Horizontal distance
-    #     h = np.linalg.norm(left - right)
-        
-    #     # MAR formula
-    #     mar = v / (h + 1e-6)
-    #     return mar
-    
-    # def _head_pose(self, points, w, h):
-    #     """Estimate head pose (pitch, yaw, roll) from facial landmarks"""
-    #     # Key points for pose estimation
-    #     nose_tip = points[1]
-    #     chin = points[152]
-    #     left_eye = points[33]
-    #     right_eye = points[263]
-    #     left_mouth = points[61]
-    #     right_mouth = points[291]
-        
-    #     # Yaw (left-right head rotation)
-    #     eye_center = (left_eye + right_eye) / 2
-    #     yaw = np.arctan2(nose_tip[0] - eye_center[0], nose_tip[2] - eye_center[2] + 1e-6)
-        
-    #     # Pitch (up-down head rotation)
-    #     pitch = np.arctan2(nose_tip[1] - chin[1], abs(nose_tip[2] - chin[2]) + 1e-6)
-        
-    #     # Roll (head tilt)
-    #     roll = np.arctan2(right_eye[1] - left_eye[1], right_eye[0] - left_eye[0] + 1e-6)
-        
-    #     return pitch, yaw, roll
-
-    # def _facial_symmetry(self, points):
-    #     """Calculate facial symmetry score"""
-    #     # Compare left and right landmarks
-    #     left_landmarks = [33, 133, 61, 206]  # Left eye, mouth, cheek
-    #     right_landmarks = [263, 362, 291, 426]  # Right eye, mouth, cheek
-        
-    #     # Get face center (nose tip)
-    #     center_x = points[1][0]
-        
-    #     # Calculate symmetry for each pair
-    #     symmetry_scores = []
-    #     for left_idx, right_idx in zip(left_landmarks, right_landmarks):
-    #         left_dist = abs(points[left_idx][0] - center_x)
-    #         right_dist = abs(points[right_idx][0] - center_x)
-            
-    #         # Symmetry score (closer to 1 = more symmetric)
-    #         score = 1.0 - abs(left_dist - right_dist) / (left_dist + right_dist + 1e-6)
-    #         symmetry_scores.append(score)
-        
-    #     return np.mean(symmetry_scores)
+            self.samples.append({
+                'pt_path': str(pt_file),
+                'label': label,
+                'filename': pt_file.name,
+                'original_path': str(pt_file)
+            })
+        
+        print(f"✅ Found {len(pt_files)} .pt files")
 
     def __len__(self):
-        return len(self.video_list)
+        return len(self.samples)
 
     def __getitem__(self, idx):
-        video_path = self.video_list[idx]
-        label = self.labels[idx]
-
-        # Enable verbose debugging for first 2 videos
-        if idx < 2:
-            print(f"\n{'#'*60}")
-            print(f"# PROCESSING SAMPLE {idx}: {os.path.basename(video_path)}")
-            print(f"{'#'*60}")
-
-        try:
-            # LOAD FRAMES
-            frames = self._sample_frames(video_path)
+        """
+        Load a preprocessed sample from disk.
         
-            if frames is None or frames.size == 0:
-                print(f"❌ Frames is None, creating dummy frames")
-                # Return dummy immediately, don't proceed
-                return self._get_dummy_sample(label, video_path)
+        Returns:
+            dict with keys:
+                - vision_behaviour: [T, 50] float32
+                - vision_face: [3, T, H, W] float32 (normalized)
+                - audio_mel: [3, 128, time_steps] float32
+                - audio_wave: [audio_length] float32
+                - label: long
+                - videoname: str
+        """
+        sample_info = self.samples[idx]
+        
+        try:
+            # Load the .pt file
+            data = torch.load(sample_info['pt_path'], map_location='cpu')
             
-            # EXTRACT BEHAVIORAL FEATURES
-            # This returns shape (64, 50)
-            # behavioral_features = self._extract_behavioral_features(frames)
-            face_crops, behavioral_features = self._process_mmpda_pipeline(frames)
-
-            # # ==================================================================
-            # # DEBUG: SAVE 1 SAMPLE FRAME PER VIDEO
-            # # ==================================================================
-            # # Create debug directory
-            # debug_dir = "debug_preprocessed_samples"
-            # os.makedirs(debug_dir, exist_ok=True)
+            # Extract components
+            vision_behaviour = data['vision_behaviour']  # [T, 50]
+            vision_face = data['vision_face']             # [3, T, H, W] uint8
+            audio_mel = data['audio_mel']                 # [3, 128, time_steps]
+            audio_wave = data['audio_wave']               # [audio_length]
+            label = data['label']                          # scalar
+            videoname = data.get('videoname', sample_info['filename'])
             
-            # # Pick a random frame index to verify
-            # rnd_idx = np.random.randint(0, len(face_crops))
+            # ====== POST-PROCESSING ======
             
-            # # 1. Get the Image (The 160x160 Crop the model actually sees)
-            # # Convert RGB (MediaPipe/Tensor format) back to BGR (OpenCV format)
-            # debug_img = cv2.cvtColor(face_crops[rnd_idx], cv2.COLOR_RGB2BGR)
+            # 1. Convert face from uint8 [0-255] to float32 [0-1]
+            vision_face = vision_face.float() / 255.0
             
-            # # 2. Get the Features for this frame
-            # feats = behavioral_features[rnd_idx]
+            # 2. Normalize face images (ImageNet stats)
+            # Shape: [3, T, H, W]
+            mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1, 1)
+            std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1, 1)
+            vision_face = (vision_face - mean) / std
             
-            # # 3. Overlay Key Features on the image to verify they match the face
-            # # -- Head Pose (Indices 35-37: Pitch, Yaw, Roll)
-            # pose_txt = f"Y:{feats[36]:.1f} P:{feats[35]:.1f}"
+            # 3. Ensure correct dtypes
+            vision_behaviour = vision_behaviour.float()
+            audio_mel = audio_mel.float()
+            audio_wave = audio_wave.float()
+            label = label.long() if isinstance(label, torch.Tensor) else torch.tensor(label, dtype=torch.long)
             
-            # # -- Emotions (Indices 43-47: Happy, Sad, Surprise, Fear, Anger)
-            # emo_names = ['Hap', 'Sad', 'Sur', 'Fea', 'Ang']
-            # emo_vals = feats[43:48]
-            # top_emo_idx = np.argmax(emo_vals)
-            # emo_txt = f"{emo_names[top_emo_idx]}:{emo_vals[top_emo_idx]:.2f}"
-            
-            # # -- Valence/Arousal (Indices 48-49)
-            # va_txt = f"V:{feats[48]:.1f} A:{feats[49]:.1f}"
-
-            # # Draw text (White with Black outline for readability)
-            # def draw_txt(img, text, y):
-            #     cv2.putText(img, text, (5, y), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0,0,0), 2) # Outline
-            #     cv2.putText(img, text, (5, y), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255,255,255), 1) # Text
-
-            # draw_txt(debug_img, pose_txt, 15)
-            # draw_txt(debug_img, emo_txt, 30)
-            # draw_txt(debug_img, va_txt, 45)
-            
-            # # Save to disk
-            # safe_name = os.path.basename(video_path).replace('.', '_')
-            # cv2.imwrite(os.path.join(debug_dir, f"{safe_name}_frame{rnd_idx}.jpg"), debug_img)
-            # # ==================================================================
-
-            # FIX THE SHAPE MISMATCH (The Fix for the Warning)
-            EXPECTED_RAW_DIM = 50
-            
-            # Validate shape
-            if behavioral_features.shape[1] != EXPECTED_RAW_DIM:
-                print(f"⚠️ Fixing behavioral shape: {behavioral_features.shape} -> {EXPECTED_RAW_DIM}")
-                
-                if behavioral_features.shape[1] < EXPECTED_RAW_DIM:
-                    # Pad if we somehow got less than 50 (rare error case)
-                    padding = np.zeros((self.num_frames, EXPECTED_RAW_DIM - behavioral_features.shape[1]), dtype=np.float32)
-                    behavioral_features = np.concatenate([behavioral_features, padding], axis=1)
-                else:
-                    # Crop if we got more
-                    behavioral_features = behavioral_features[:, :EXPECTED_RAW_DIM]
-
-            # 4. EXTRACT AUDIO
-            audio_wave, audio_mel = self._extract_audio(video_path)
-
-            # 5. PREPARE TENSORS
-            # Convert face frames to tensor: (T, H, W, C) -> (C, T, H, W)
-            # frames_tensor = torch.from_numpy(frames).permute(3, 0, 1, 2).float()
-            frames_tensor = torch.from_numpy(face_crops).permute(3, 0, 1, 2).float()
-
-            # Normalize to [-1, 1]
-            frames_tensor = (frames_tensor / 255.0 - 0.5) * 2.0
-
-            # Convert behavioral features to tensor
-            behavioral_tensor = torch.from_numpy(behavioral_features).float()
-            
-            # 6. DEBUG (Optional)
-            if idx % 50 == 0:
-                print(f"✅ Loaded {os.path.basename(video_path)} | Feat Shape: {behavioral_tensor.shape}")
-
-            sample = {
-                'vision_behaviour': behavioral_tensor,  # (T=64, 64)
-                'vision_face': frames_tensor,           # (C=3, T=64, H=160, W=160)
-                'audio_mel': audio_mel,                 # (C=3, n_mels=128, time)
-                'audio_wave': audio_wave,               # (audio_length,)
-                'label': torch.tensor(label, dtype=torch.long),
-                'videoname': os.path.basename(video_path)
+            return {
+                'vision_behaviour': vision_behaviour,
+                'vision_face': vision_face,
+                'audio_mel': audio_mel,
+                'audio_wave': audio_wave,
+                'label': label,
+                'videoname': videoname
             }
-
-            return sample
-
+        
         except Exception as e:
-            print(f"❌ Error processing {os.path.basename(video_path)}: {str(e)}")
-            return self._get_dummy_sample(label, video_path)
+            print(f"❌ Error loading {sample_info['pt_path']}: {e}")
+            # Return a dummy sample to avoid breaking training
+            return self._get_dummy_sample(sample_info['label'])
+    
+    def _get_dummy_sample(self, label):
+        """
+        Fallback dummy sample in case of loading errors.
+        Matches the expected output format.
+        """
+        return {
+            'vision_behaviour': torch.zeros(64, 50, dtype=torch.float32),
+            'vision_face': torch.zeros(3, 64, 160, 160, dtype=torch.float32),
+            'audio_mel': torch.zeros(3, 128, 501, dtype=torch.float32),  # 80000//160 + 1
+            'audio_wave': torch.zeros(80000, dtype=torch.float32),
+            'label': torch.tensor(label, dtype=torch.long),
+            'videoname': 'dummy_sample'
+        }
+
+def compute_class_weights(dataset):
+    """
+    Compute class weights for imbalanced datasets.
+    
+    Args:
+        dataset: PreprocessedVideoDataset instance
+    
+    Returns:
+        torch.Tensor: Class weights [weight_class_0, weight_class_1]
+    """
+    labels = [sample['label'] for sample in dataset.samples]
+    
+    # Count occurrences
+    unique, counts = np.unique(labels, return_counts=True)
+    
+    # Compute inverse frequency weights
+    total = len(labels)
+    weights = total / (len(unique) * counts)
+    
+    print(f"📊 Class Distribution:")
+    for cls, count, weight in zip(unique, counts, weights):
+        class_name = 'Truthful' if cls == 0 else 'Deceptive'
+        print(f"   Class {cls} ({class_name}): {count} samples (weight: {weight:.3f})")
+    
+    return torch.FloatTensor(weights)
 
 class FocalLoss(nn.Module):
     """
@@ -2399,7 +470,14 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch, args
         audio_mel = sample_batched['audio_mel'].to(device)  # (B, 3, n_mels, time)
         audio_wave = sample_batched['audio_wave'].to(device)  # (B, audio_length)
         labels = sample_batched['label'].to(device)  # (B,)
-
+        
+        if torch.isnan(audio_mel).any() or torch.isinf(audio_mel).any():
+            print(f"⚠️ Warning: Batch {i} contains NaN/Inf audio. Skipping.")
+            continue
+            
+        # Clamp audio to safe range (e.g., -100 to 100) to prevent log(0) explosions
+        audio_mel = torch.clamp(audio_mel, min=-100.0, max=100.0)
+        
         # Forward pass
         optimizer.zero_grad()
 
@@ -2426,10 +504,16 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch, args
                 face_loss = torch.tensor(0.0)
                 al_loss = torch.tensor(0.0)
 
+        if torch.isnan(loss) or torch.isinf(loss):
+            print(f"⚠️ Warning: Batch {i} loss is NaN. Skipping optimizer step.")
+            # Clear cache if this happens
+            torch.cuda.empty_cache()
+            continue
 
         # BACKWARD PASS WITH SCALER
         # Scales loss to prevent underflow in float16
         scaler.scale(loss).backward()
+        # loss.backward()
 
         # Gradient clipping (Unscale first)
         scaler.unscale_(optimizer)
@@ -2438,11 +522,6 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch, args
         # Optimizer Step
         scaler.step(optimizer)
         scaler.update()
-
-        # # Backward pass
-        # loss.backward()
-
-       
         # optimizer.step()
 
         # Statistics
@@ -2543,76 +622,422 @@ def load_checkpoint(model, optimizer, scheduler_warmup, scheduler_cosine, device
         return ckpt['epoch'] + 1, ckpt['current_step'], ckpt['best_val_acc'], min_val_loss
     return 0, 0, 0.0, min_val_loss
 
-def compute_class_weights(dataset):
-    """
-    Fast version - directly access labels without loading full samples
-    Only use if the dataset has a direct label access method
-    """
-    print(f"\n{'='*60}")
-    print(f"📊 Computing Class Weights (Fast Mode)...")
-    print(f"{'='*60}")
+# def compute_class_weights(dataset):
+#     """
+#     Fast version - directly access labels without loading full samples
+#     Only use if the dataset has a direct label access method
+#     """
+#     print(f"\n{'='*60}")
+#     print(f"📊 Computing Class Weights (Fast Mode)...")
+#     print(f"{'='*60}")
     
-    # Check if dataset has direct label access
-    if hasattr(dataset, 'labels'):
-        labels = dataset.labels
-        print(f"  ✅ Using pre-loaded labels from dataset")
-    else:
-        print(f"  ⚠️ No direct label access, falling back to full loading")
-        return compute_class_weights(dataset)
+#     # Check if dataset has direct label access
+#     if hasattr(dataset, 'labels'):
+#         labels = dataset.labels
+#         print(f"  ✅ Using pre-loaded labels from dataset")
+#     else:
+#         print(f"  ⚠️ No direct label access, falling back to full loading")
+#         return compute_class_weights(dataset)
     
-    class_counts = np.bincount(labels)
-    total = sum(class_counts)
-    num_classes = len(class_counts)
+#     class_counts = np.bincount(labels)
+#     total = sum(class_counts)
+#     num_classes = len(class_counts)
     
-    print(f"\n📊 Dataset Statistics:")
-    print(f"  Total samples: {total}")
-    print(f"  Class 0 (Truth): {class_counts[0]} samples ({100*class_counts[0]/total:.1f}%)")
-    print(f"  Class 1 (Lie):   {class_counts[1]} samples ({100*class_counts[1]/total:.1f}%)")
-    print(f"  Imbalance ratio: {max(class_counts)/min(class_counts):.2f}:1")
+#     print(f"\n📊 Dataset Statistics:")
+#     print(f"  Total samples: {total}")
+#     print(f"  Class 0 (Truth): {class_counts[0]} samples ({100*class_counts[0]/total:.1f}%)")
+#     print(f"  Class 1 (Lie):   {class_counts[1]} samples ({100*class_counts[1]/total:.1f}%)")
+#     print(f"  Imbalance ratio: {max(class_counts)/min(class_counts):.2f}:1")
     
-    # Compute inverse frequency weights
-    weights = total / (num_classes * class_counts)
-    weights = weights / weights.sum() * num_classes
+#     # Compute inverse frequency weights
+#     weights = total / (num_classes * class_counts)
+#     weights = weights / weights.sum() * num_classes
     
-    print(f"  Class weights: [Truth: {weights[0]:.3f}, Lie: {weights[1]:.3f}]")
-    print(f"{'='*60}\n")
+#     print(f"  Class weights: [Truth: {weights[0]:.3f}, Lie: {weights[1]:.3f}]")
+#     print(f"{'='*60}\n")
     
-    return torch.FloatTensor(weights)
+#     return torch.FloatTensor(weights)
+
+# def main(args):
+
+#     # Setup
+#     setup_seed(42)
+#     device = torch.device(f'cuda:{args.gpu}' if torch.cuda.is_available() else 'cpu')
+
+#     # Create log directory
+#     # os.makedirs(args.log, exist_ok=True)
+#     # log_file = open(os.path.join(args.log, 'training_log.txt'), 'a')  # 'a' for resume
+#     log_file = open(os.path.join(LOG_DIR, 'training_log.txt'), 'a', buffering=1)
+
+#     print(f"Using device: {device}")
+#     print(f"Arguments: {args}")
+#     log_file.write(f"Arguments: {args}\n")
+
+#     # --- Training Set ---
+#     if args.train_list:
+#         print(f"\n  Initializing Training Dataset from CSV: {args.train_list}")
+#         if not os.path.exists(args.train_list):
+#             raise FileNotFoundError(f"Training CSV not found: {args.train_list}")
+            
+#         train_dataset = VideoDeceptionDataset(
+#             csv_file=args.train_list,
+#             data_root=args.train_root,
+#             num_frames=args.num_frames,
+#             frame_size=(args.frame_height, args.frame_width),
+#             mode='train'
+#         )
+#     elif args.train_root:
+#         print(f"\n🏗️  Initializing Training Dataset from Folder: {args.train_root}")
+#         train_dataset = VideoDeceptionDataset(
+#             data_root=args.train_root,
+#             num_frames=args.num_frames,
+#             frame_size=(args.frame_height, args.frame_width),
+#             mode='train'
+#         )
+#     else:
+#         raise ValueError("❌ Error: You must provide either --train_list (CSV) or --train_root (Folder)")
+
+#     # --- Validation Set ---
+#     if args.val_list:
+#         print(f"\n🏗️  Initializing Validation Dataset from CSV: {args.val_list}")
+#         if not os.path.exists(args.val_list):
+#             print(f"⚠️ Warning: Validation CSV not found at {args.val_list}. skipping validation.")
+#             val_dataset = None
+#         else:
+#             val_dataset = VideoDeceptionDataset(
+#                 csv_file=args.val_list,
+#                 data_root=args.train_root,
+#                 num_frames=args.num_frames,
+#                 frame_size=(args.frame_height, args.frame_width),
+#                 mode='val'
+#             )
+#     elif args.val_root:
+#         val_dataset = VideoDeceptionDataset(
+#             data_root=args.val_root,
+#             num_frames=args.num_frames,
+#             frame_size=(args.frame_height, args.frame_width),
+#             mode='val'
+#         )
+#     else:
+#         print("⚠️ No validation data provided.")
+#         val_dataset = None
+#     # if args.train_root:
+#     #     train_dataset = VideoDeceptionDataset(
+#     #         csv_file=args.train_list,
+#     #         data_root=args.train_root,
+#     #         num_frames=args.num_frames,
+#     #         frame_size=(args.frame_height, args.frame_width),
+#     #         audio_length=args.audio_length,
+#     #         sample_rate=args.sample_rate,
+#     #         n_mels=args.n_mels,
+#     #         mode='train'
+#     #     )
+#     # else:
+#     #     train_dataset = VideoDeceptionDataset(
+#     #         annotation_file=args.train_list,
+#     #         num_frames=args.num_frames,
+#     #         frame_size=(args.frame_height, args.frame_width),
+#     #         audio_length=args.audio_length,
+#     #         sample_rate=args.sample_rate,
+#     #         n_mels=args.n_mels,
+#     #         mode='train'
+#     #     )
+
+#     # if args.val_root:
+#     #     val_dataset = VideoDeceptionDataset(
+#     #         csv_file=args.train_list,
+#     #         data_root=args.val_root,
+#     #         num_frames=args.num_frames,
+#     #         frame_size=(args.frame_height, args.frame_width),
+#     #         audio_length=args.audio_length,
+#     #         sample_rate=args.sample_rate,
+#     #         n_mels=args.n_mels,
+#     #         mode='val'
+#     #     )
+#     # else:
+#     #     val_dataset = VideoDeceptionDataset(
+#     #         annotation_file=args.val_list,
+#     #         num_frames=args.num_frames,
+#     #         frame_size=(args.frame_height, args.frame_width),
+#     #         audio_length=args.audio_length,
+#     #         sample_rate=args.sample_rate,
+#     #         n_mels=args.n_mels,
+#     #         mode='val'
+#     #     )
+
+#     print("============= Class Weight ==========")
+#     class_weights = compute_class_weights(train_dataset)
+#     print(class_weights)
+   
+#     # Create dataloaders
+#     train_loader = DataLoader(
+#         train_dataset,
+#         batch_size=args.batchsize,
+#         shuffle=True,
+#         num_workers=args.num_workers,
+#         pin_memory=True,
+#         drop_last=True
+#     )
+
+#     val_loader = DataLoader(
+#         val_dataset,
+#         batch_size=args.batchsize,
+#         shuffle=False,
+#         num_workers=args.num_workers,
+#         pin_memory=True
+#     )
+
+#     # Add device to args for model
+#     args.device = device
+
+#     print(f"\n  Creating Model: {args.model_arch.upper()}")
+
+#     if args.model_arch == 'normal':
+#         # The robust MULT transformer model (Best for 100k data)
+#         model = FusionModule(args)
+#     elif args.model_arch == 'lite':
+#         # The intermediate model
+#         model = LightweightFusionModule(args)
+#     elif args.model_arch == 'minimal':
+#         # The very small model (Best for debugging/small data)
+#         model = MinimalFusionModule(args)
+#     else:
+#         raise ValueError(f"❌ Unknown model architecture: {args.model_arch}")
+
+#     # ###### FREEZING MODEL
+#     # for param in model.audio_model.parameters():
+#     #     param.requires_grad = False
+#     # for param in model.face_model.parameters():
+#     #     param.requires_grad = False
+
+#     model = model.to(device)
+
+#     if torch.cuda.device_count() > 1:
+#         print(f"\n🚀 Detected {torch.cuda.device_count()} GPUs! Activating DataParallel.")
+#         model = nn.DataParallel(model)
+
+#     print(f"Model created with {sum(p.numel() for p in model.parameters())} parameters")
+#     log_file.write(f"Model parameters: {sum(p.numel() for p in model.parameters())}\n")
+
+#     ### Focal loss
+#     # criterion = FocalLoss(
+#     #     alpha=class_weights.to(device),
+#     #     gamma=0.3  # Focusing parameter 2.0
+#     # )
+
+#     # Loss and optimizer
+#     soft_weights = torch.tensor([1.0, 1.91]).to(device)
+#     criterion = nn.CrossEntropyLoss(weight=soft_weights)
+#     optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-3)
+
+#     # Learning rate scheduler
+#     warmup_epochs = 1
+#     steps_per_epoch = len(train_loader)
+#     total_steps = args.max_epochs * steps_per_epoch
+#     warmup_steps = warmup_epochs * steps_per_epoch
+
+#     def lr_lambda(current_step):
+#         if current_step < warmup_steps:
+#             return float(current_step) / float(max(1, warmup_steps))
+#         else:
+#             return 1.0
+
+#     scheduler_warmup = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
+#     scheduler_cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
+#         optimizer, T_max=total_steps - warmup_steps, eta_min=1e-6
+#     )
+
+#     # LOAD CHECKPOINT IF RESUMING
+#     start_epoch, current_step, best_val_acc, min_val_loss = load_checkpoint(
+#         model, optimizer, scheduler_warmup, scheduler_cosine, device
+#     )
+
+#     scaler = GradScaler()
+    
+#     val_loss = min_val_loss 
+
+#     # Training loop
+#     for epoch in range(start_epoch, args.max_epochs):
+#         print(f"\n{'=' * 50}")
+#         print(f"Epoch {epoch + 1}/{args.max_epochs}")
+#         print(f"{'=' * 50}")
+
+#         # if epoch == 2:
+#         #     if isinstance(model, nn.DataParallel):
+#         #         actual_model = model.module
+#         #     else:
+#         #         actual_model = model
+#         #     print(" Unfreezing encoders...")
+#         #     for param in actual_model.audio_model.parameters():
+#         #         param.requires_grad = True
+#         #     for param in actual_model.face_model.parameters():
+#         #         param.requires_grad = True
+
+#         # Train
+#         train_loss, train_acc = train_one_epoch(
+#             model, train_loader, criterion, optimizer, device, epoch + 1, args, scaler
+#         )
+
+#         print(f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2f}%")
+#         log_file.write(f"Epoch {epoch + 1} - Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2f}%\n")
+
+#         # Update learning rate
+#         for _ in range(steps_per_epoch):
+#             if current_step < warmup_steps:
+#                 scheduler_warmup.step()
+#             else:
+#                 scheduler_cosine.step()
+#             current_step += 1
+
+#         # Validate
+#         if (epoch + 1) % args.val_interval == 0:
+#             # val_loss, val_acc, val_preds, val_labels, val_scores = validate(
+#             #     model, val_loader, criterion, device
+#             # )
+#             val_loss, val_acc, val_f1, val_preds, val_labels, val_scores = validate(
+#                 model, val_loader, criterion, device
+#             )
+
+#             # print(f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%, Val F1: {val_f1:.4f}")
+#             print(f"Epoch {epoch + 1} - Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%, Val F1: {val_f1:.4f}")
+#             log_file.write(f"Epoch {epoch + 1} - Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%, Val F1: {val_f1:.4f}\n")
+#             # print(f"Epoch [{epoch + 1}] Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%")
+#             # log_file.write(f"Epoch {epoch + 1} - Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%\n")
+
+#             # Save best model - accuracy
+#             if val_acc > best_val_acc:
+#                 best_val_acc = val_acc
+
+#                 # Unwrap model before saving Best Model
+#                 if isinstance(model, nn.DataParallel):
+#                     model_to_save = model.module
+#                 else:
+#                     model_to_save = model
+                
+#                 # filename = f'best_model_epoch_{epoch + 1}.pt'
+#                 # filename = 'best_model_acc.pt'
+#                 filename = f'best_model_acc_{int(val_acc)}_ep{epoch+1}.pt'
+#                 save_path = os.path.join(CHECKPOINT_DIR, filename)
+
+#                 # Save to checkpoint dir (synced to S3)
+#                 # os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+#                 torch.save({
+#                     'epoch': epoch + 1,
+#                     'model_state_dict': model_to_save.state_dict(),
+#                     'optimizer_state_dict': optimizer.state_dict(),
+#                     'best_acc': best_val_acc,
+#                     'val_loss': val_loss,
+#                     'args': vars(args)
+#                 }, save_path)
+                
+#                 # # Also save to log dir
+#                 # torch.save({
+#                 #     'epoch': epoch + 1,
+#                 #     'model_state_dict': model_to_save.state_dict(),
+#                 #     'optimizer_state_dict': optimizer.state_dict(),
+#                 #     'best_acc': best_val_acc,
+#                 # }, os.path.join(CHECKPOINT_DIR, 'best_model.pt'))
+#                 print(f"🏆 Saved best model with accuracy: {best_val_acc:.2f}%")
+#                 log_file.write(f"Saved best model with accuracy: {best_val_acc:.2f}%\n")
+            
+#             # Save best model - val loss
+#             if val_loss < min_val_loss:
+                
+#                 min_val_loss = val_loss
+
+#                 # Save filename
+#                 # filename = 'best_model_loss.pt'
+#                 filename = f'best_model_loss_ep{epoch+1}_acc{int(val_acc)}.pt'
+
+#                 save_path = os.path.join(CHECKPOINT_DIR, filename)
+
+#                 # Unwrap model before saving Best Model
+#                 if isinstance(model, nn.DataParallel):
+#                     model_to_save = model.module
+#                 else:
+#                     model_to_save = model
+                
+#                 # Save to checkpoint dir (synced to S3)
+#                 # os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+#                 torch.save({
+#                     'epoch': epoch + 1,
+#                     'model_state_dict': model_to_save.state_dict(),
+#                     'optimizer_state_dict': optimizer.state_dict(),
+#                     'best_acc': best_val_acc,
+#                     'min_val_loss': min_val_loss,
+#                     'args': vars(args)
+#                 }, save_path)
+                
+#                 print(f" New Lowest Loss: {min_val_loss:.4f} (Saved to {filename})")
+#                 log_file.write(f"Saved Lowest Loss model: {min_val_loss:.4f}\n")
+
+#         # Unwrap model before passing to custom save function
+#         if isinstance(model, nn.DataParallel):
+#             model_for_ckpt = model.module
+#         else:
+#             model_for_ckpt = model
+#         # SAVE CHECKPOINT AFTER EACH EPOCH
+#         save_checkpoint(
+#             model_for_ckpt, optimizer, epoch, current_step, best_val_acc,
+#             scheduler_warmup, scheduler_cosine, warmup_steps, min_val_loss
+#         )
+
+#         log_file.flush()
+
+#     # Unwrap model before final save
+#     if isinstance(model, nn.DataParallel):
+#         final_model_to_save = model.module
+#     else:
+#         final_model_to_save = model
+
+#     # SAVE FINAL MODEL TO SAGEMAKER OUTPUT PATH
+#     # os.makedirs(MODEL_DIR, exist_ok=True)
+#     # torch.save(final_model_to_save.state_dict(), os.path.join(MODEL_DIR, 'model.pt'))
+    
+#     torch.save({
+#         'model_state_dict': final_model_to_save.state_dict(),
+#         'args': vars(args),
+#         'best_acc': best_val_acc,
+#         'val_loss': val_loss
+#     }, os.path.join(MODEL_DIR, 'model_full.pt'))
+
+#     print(f"\n✅ Training completed! Best validation accuracy: {best_val_acc:.2f}%")
+#     print(f"📦 Model saved to {MODEL_DIR}")
+#     log_file.write(f"\nBest validation accuracy: {best_val_acc:.2f}%\n")
+#     log_file.close()
 
 def main(args):
-
+    """
+    Main training function - Updated to use PreprocessedVideoDataset
+    """
     # Setup
     setup_seed(42)
     device = torch.device(f'cuda:{args.gpu}' if torch.cuda.is_available() else 'cpu')
 
     # Create log directory
-    # os.makedirs(args.log, exist_ok=True)
-    # log_file = open(os.path.join(args.log, 'training_log.txt'), 'a')  # 'a' for resume
     log_file = open(os.path.join(LOG_DIR, 'training_log.txt'), 'a', buffering=1)
 
     print(f"Using device: {device}")
     print(f"Arguments: {args}")
     log_file.write(f"Arguments: {args}\n")
 
+    ##### DATASET INITIALIZATION
     # --- Training Set ---
     if args.train_list:
-        print(f"\n  Initializing Training Dataset from CSV: {args.train_list}")
+        print(f"\n📂 Initializing Training Dataset from CSV: {args.train_list}")
         if not os.path.exists(args.train_list):
             raise FileNotFoundError(f"Training CSV not found: {args.train_list}")
-            
-        train_dataset = VideoDeceptionDataset(
+        
+        # Use PreprocessedVideoDataset instead of VideoDeceptionDataset
+        train_dataset = PreprocessedVideoDataset(
             csv_file=args.train_list,
-            data_root=args.train_root,
-            num_frames=args.num_frames,
-            frame_size=(args.frame_height, args.frame_width),
+            data_root=args.train_root,  # Should point to folder with .pt files
             mode='train'
         )
     elif args.train_root:
-        print(f"\n🏗️  Initializing Training Dataset from Folder: {args.train_root}")
-        train_dataset = VideoDeceptionDataset(
+        print(f"\n📂 Initializing Training Dataset from Folder: {args.train_root}")
+        train_dataset = PreprocessedVideoDataset(
             data_root=args.train_root,
-            num_frames=args.num_frames,
-            frame_size=(args.frame_height, args.frame_width),
             mode='train'
         )
     else:
@@ -2620,73 +1045,29 @@ def main(args):
 
     # --- Validation Set ---
     if args.val_list:
-        print(f"\n🏗️  Initializing Validation Dataset from CSV: {args.val_list}")
+        print(f"\n📂 Initializing Validation Dataset from CSV: {args.val_list}")
         if not os.path.exists(args.val_list):
-            print(f"⚠️ Warning: Validation CSV not found at {args.val_list}. skipping validation.")
+            print(f"⚠️ Warning: Validation CSV not found at {args.val_list}. Skipping validation.")
             val_dataset = None
         else:
-            val_dataset = VideoDeceptionDataset(
+            val_dataset = PreprocessedVideoDataset(
                 csv_file=args.val_list,
-                data_root=args.train_root,
-                num_frames=args.num_frames,
-                frame_size=(args.frame_height, args.frame_width),
+                data_root=args.val_root,  # Should point to folder with .pt files
                 mode='val'
             )
     elif args.val_root:
-        val_dataset = VideoDeceptionDataset(
+        print(f"\n📂 Initializing Validation Dataset from Folder: {args.val_root}")
+        val_dataset = PreprocessedVideoDataset(
             data_root=args.val_root,
-            num_frames=args.num_frames,
-            frame_size=(args.frame_height, args.frame_width),
             mode='val'
         )
     else:
         print("⚠️ No validation data provided.")
         val_dataset = None
-    # if args.train_root:
-    #     train_dataset = VideoDeceptionDataset(
-    #         csv_file=args.train_list,
-    #         data_root=args.train_root,
-    #         num_frames=args.num_frames,
-    #         frame_size=(args.frame_height, args.frame_width),
-    #         audio_length=args.audio_length,
-    #         sample_rate=args.sample_rate,
-    #         n_mels=args.n_mels,
-    #         mode='train'
-    #     )
-    # else:
-    #     train_dataset = VideoDeceptionDataset(
-    #         annotation_file=args.train_list,
-    #         num_frames=args.num_frames,
-    #         frame_size=(args.frame_height, args.frame_width),
-    #         audio_length=args.audio_length,
-    #         sample_rate=args.sample_rate,
-    #         n_mels=args.n_mels,
-    #         mode='train'
-    #     )
 
-    # if args.val_root:
-    #     val_dataset = VideoDeceptionDataset(
-    #         csv_file=args.train_list,
-    #         data_root=args.val_root,
-    #         num_frames=args.num_frames,
-    #         frame_size=(args.frame_height, args.frame_width),
-    #         audio_length=args.audio_length,
-    #         sample_rate=args.sample_rate,
-    #         n_mels=args.n_mels,
-    #         mode='val'
-    #     )
-    # else:
-    #     val_dataset = VideoDeceptionDataset(
-    #         annotation_file=args.val_list,
-    #         num_frames=args.num_frames,
-    #         frame_size=(args.frame_height, args.frame_width),
-    #         audio_length=args.audio_length,
-    #         sample_rate=args.sample_rate,
-    #         n_mels=args.n_mels,
-    #         mode='val'
-    #     )
-
-    print("============= Class Weight ==========")
+    ###### CLASS WEIGHTS & DATA LOADERS
+    
+    print("\n============= Class Weights ==========")
     class_weights = compute_class_weights(train_dataset)
     print(class_weights)
    
@@ -2700,36 +1081,30 @@ def main(args):
         drop_last=True
     )
 
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=args.batchsize,
-        shuffle=False,
-        num_workers=args.num_workers,
-        pin_memory=True
-    )
+    if val_dataset is not None:
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=args.batchsize,
+            shuffle=False,
+            num_workers=args.num_workers,
+            pin_memory=True
+        )
+    else:
+        val_loader = None
 
-    # Add device to args for model
+    ##### MODEL CREATION
+    
     args.device = device
-
-    print(f"\n  Creating Model: {args.model_arch.upper()}")
+    print(f"\n🏗️  Creating Model: {args.model_arch.upper()}")
 
     if args.model_arch == 'normal':
-        # The robust MULT transformer model (Best for 100k data)
         model = FusionModule(args)
     elif args.model_arch == 'lite':
-        # The intermediate model
         model = LightweightFusionModule(args)
     elif args.model_arch == 'minimal':
-        # The very small model (Best for debugging/small data)
         model = MinimalFusionModule(args)
     else:
         raise ValueError(f"❌ Unknown model architecture: {args.model_arch}")
-
-    # ###### FREEZING MODEL
-    # for param in model.audio_model.parameters():
-    #     param.requires_grad = False
-    # for param in model.face_model.parameters():
-    #     param.requires_grad = False
 
     model = model.to(device)
 
@@ -2737,18 +1112,15 @@ def main(args):
         print(f"\n🚀 Detected {torch.cuda.device_count()} GPUs! Activating DataParallel.")
         model = nn.DataParallel(model)
 
-    print(f"Model created with {sum(p.numel() for p in model.parameters())} parameters")
-    log_file.write(f"Model parameters: {sum(p.numel() for p in model.parameters())}\n")
+    print(f"Model created with {sum(p.numel() for p in model.parameters()):,} parameters")
+    log_file.write(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}\n")
 
-    ### Focal loss
-    # criterion = FocalLoss(
-    #     alpha=class_weights.to(device),
-    #     gamma=0.3  # Focusing parameter 2.0
-    # )
-
-    # Loss and optimizer
+    ##### LOSS, OPTIMIZER, SCHEDULER
+    
+    # Loss with class weights
     soft_weights = torch.tensor([1.0, 1.91]).to(device)
     criterion = nn.CrossEntropyLoss(weight=soft_weights)
+    
     optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-3)
 
     # Learning rate scheduler
@@ -2768,31 +1140,21 @@ def main(args):
         optimizer, T_max=total_steps - warmup_steps, eta_min=1e-6
     )
 
-    # LOAD CHECKPOINT IF RESUMING
+    ##### LOAD CHECKPOINT IF RESUMING
+    
     start_epoch, current_step, best_val_acc, min_val_loss = load_checkpoint(
         model, optimizer, scheduler_warmup, scheduler_cosine, device
     )
 
     scaler = GradScaler()
-    
     val_loss = min_val_loss 
 
-    # Training loop
+    ##### TRAINING LOOP
+    
     for epoch in range(start_epoch, args.max_epochs):
         print(f"\n{'=' * 50}")
         print(f"Epoch {epoch + 1}/{args.max_epochs}")
         print(f"{'=' * 50}")
-
-        # if epoch == 2:
-        #     if isinstance(model, nn.DataParallel):
-        #         actual_model = model.module
-        #     else:
-        #         actual_model = model
-        #     print(" Unfreezing encoders...")
-        #     for param in actual_model.audio_model.parameters():
-        #         param.requires_grad = True
-        #     for param in actual_model.face_model.parameters():
-        #         param.requires_grad = True
 
         # Train
         train_loss, train_acc = train_one_epoch(
@@ -2811,37 +1173,24 @@ def main(args):
             current_step += 1
 
         # Validate
-        if (epoch + 1) % args.val_interval == 0:
-            # val_loss, val_acc, val_preds, val_labels, val_scores = validate(
-            #     model, val_loader, criterion, device
-            # )
+        if val_loader is not None and (epoch + 1) % args.val_interval == 0:
             val_loss, val_acc, val_f1, val_preds, val_labels, val_scores = validate(
                 model, val_loader, criterion, device
             )
 
-            # print(f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%, Val F1: {val_f1:.4f}")
             print(f"Epoch {epoch + 1} - Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%, Val F1: {val_f1:.4f}")
             log_file.write(f"Epoch {epoch + 1} - Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%, Val F1: {val_f1:.4f}\n")
-            # print(f"Epoch [{epoch + 1}] Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%")
-            # log_file.write(f"Epoch {epoch + 1} - Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%\n")
 
             # Save best model - accuracy
             if val_acc > best_val_acc:
                 best_val_acc = val_acc
 
-                # Unwrap model before saving Best Model
-                if isinstance(model, nn.DataParallel):
-                    model_to_save = model.module
-                else:
-                    model_to_save = model
+                # Unwrap model before saving
+                model_to_save = model.module if isinstance(model, nn.DataParallel) else model
                 
-                # filename = f'best_model_epoch_{epoch + 1}.pt'
-                # filename = 'best_model_acc.pt'
                 filename = f'best_model_acc_{int(val_acc)}_ep{epoch+1}.pt'
                 save_path = os.path.join(CHECKPOINT_DIR, filename)
 
-                # Save to checkpoint dir (synced to S3)
-                # os.makedirs(CHECKPOINT_DIR, exist_ok=True)
                 torch.save({
                     'epoch': epoch + 1,
                     'model_state_dict': model_to_save.state_dict(),
@@ -2851,35 +1200,17 @@ def main(args):
                     'args': vars(args)
                 }, save_path)
                 
-                # # Also save to log dir
-                # torch.save({
-                #     'epoch': epoch + 1,
-                #     'model_state_dict': model_to_save.state_dict(),
-                #     'optimizer_state_dict': optimizer.state_dict(),
-                #     'best_acc': best_val_acc,
-                # }, os.path.join(CHECKPOINT_DIR, 'best_model.pt'))
                 print(f"🏆 Saved best model with accuracy: {best_val_acc:.2f}%")
                 log_file.write(f"Saved best model with accuracy: {best_val_acc:.2f}%\n")
             
             # Save best model - val loss
             if val_loss < min_val_loss:
-                
                 min_val_loss = val_loss
-
-                # Save filename
-                # filename = 'best_model_loss.pt'
                 filename = f'best_model_loss_ep{epoch+1}_acc{int(val_acc)}.pt'
-
                 save_path = os.path.join(CHECKPOINT_DIR, filename)
 
-                # Unwrap model before saving Best Model
-                if isinstance(model, nn.DataParallel):
-                    model_to_save = model.module
-                else:
-                    model_to_save = model
+                model_to_save = model.module if isinstance(model, nn.DataParallel) else model
                 
-                # Save to checkpoint dir (synced to S3)
-                # os.makedirs(CHECKPOINT_DIR, exist_ok=True)
                 torch.save({
                     'epoch': epoch + 1,
                     'model_state_dict': model_to_save.state_dict(),
@@ -2889,15 +1220,11 @@ def main(args):
                     'args': vars(args)
                 }, save_path)
                 
-                print(f" New Lowest Loss: {min_val_loss:.4f} (Saved to {filename})")
+                print(f"💎 New Lowest Loss: {min_val_loss:.4f} (Saved to {filename})")
                 log_file.write(f"Saved Lowest Loss model: {min_val_loss:.4f}\n")
 
-        # Unwrap model before passing to custom save function
-        if isinstance(model, nn.DataParallel):
-            model_for_ckpt = model.module
-        else:
-            model_for_ckpt = model
-        # SAVE CHECKPOINT AFTER EACH EPOCH
+        # Save checkpoint after each epoch
+        model_for_ckpt = model.module if isinstance(model, nn.DataParallel) else model
         save_checkpoint(
             model_for_ckpt, optimizer, epoch, current_step, best_val_acc,
             scheduler_warmup, scheduler_cosine, warmup_steps, min_val_loss
@@ -2905,15 +1232,9 @@ def main(args):
 
         log_file.flush()
 
-    # Unwrap model before final save
-    if isinstance(model, nn.DataParallel):
-        final_model_to_save = model.module
-    else:
-        final_model_to_save = model
-
-    # SAVE FINAL MODEL TO SAGEMAKER OUTPUT PATH
-    # os.makedirs(MODEL_DIR, exist_ok=True)
-    # torch.save(final_model_to_save.state_dict(), os.path.join(MODEL_DIR, 'model.pt'))
+    ##### SAVE FINAL MODEL
+    
+    final_model_to_save = model.module if isinstance(model, nn.DataParallel) else model
     
     torch.save({
         'model_state_dict': final_model_to_save.state_dict(),
@@ -3033,3 +1354,5 @@ if __name__ == "__main__":
         
         # Re-raise so the job is marked as Failed
         raise
+
+

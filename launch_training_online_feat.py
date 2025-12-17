@@ -36,30 +36,14 @@ metric_definitions = [
     {'Name': 'val:acc',    'Regex': 'Val Acc: ([0-9\\.]+)%'},
 ]
 
-# Channel 1: Preprocessed training features (.pt files)
-train_input = TrainingInput(
-    s3_data=f's3://{BUCKET_NAME}/dataset/video/precomputed_features/train/',
-    input_mode='FastFile'  # Streams .pt files efficiently
+training_input = TrainingInput(
+    s3_data=f's3://{BUCKET_NAME}/dataset/video/', 
+    input_mode='FastFile'  # Streams instead of downloads
 )
-
-# Channel 2: Preprocessed validation features (.pt files)
-# NOTE: Your folder is named 'val/' not 'validation/'
-val_input = TrainingInput(
-    s3_data=f's3://{BUCKET_NAME}/dataset/video/precomputed_features/val/',
-    input_mode='FastFile'
-)
-
-# Channel 3: CSV files (train.csv, validation.csv, test.csv)
-csv_input = TrainingInput(
-    s3_data=f's3://{BUCKET_NAME}/dataset/video/csv_folder',
-    input_mode='File',  # Downloads all CSV files
-    s3_data_type='S3Prefix'
-)
-
 
 # Create PyTorch estimator
 estimator = PyTorch(
-    entry_point='train_test_feature.py',
+    entry_point='train_test_feature_online_feat.py',
     source_dir='.',  # Uploads all files in current directory
     role=role,
     instance_type='ml.g4dn.2xlarge',  # ml.g4dn.xlarge / ml.g5.xlarge / ml.g4dn.2xlarge / ml.g5.2xlarge / ml.g5.12xlarge
@@ -78,7 +62,7 @@ estimator = PyTorch(
     # CLI args
     hyperparameters={
         'batchsize': 16,
-        'max_epochs': 30,
+        'max_epochs': 15,
         'fusion_type': 'mult',
         'common_dim': 128,
         'num_frames': 64,
@@ -86,18 +70,17 @@ estimator = PyTorch(
         'mult_layer': 4,
         'model_arch': 'normal',
         'lr': 1e-4,
-        'num_workers': 4,
+        'num_workers': 20,
 
-        'train_list': '/opt/ml/input/data/csv/train.csv',
-        'train_root': '/opt/ml/input/data/train',  # Contains .pt files
-        
-        'val_list': '/opt/ml/input/data/csv/validation.csv',
-        'val_root': '/opt/ml/input/data/val',
+        'train_list': '/opt/ml/input/data/training/train.csv',
+        'val_list':   '/opt/ml/input/data/training/validation.csv',
+
+        'train_root': '/opt/ml/input/data/training',
+        'val_root':   '/opt/ml/input/data/validation',
 
         'audio_length': 80000,
-        'sample_rate': 16000,
-        'frame_height': 160,
-        'frame_width': 160
+        'frame_height': 224,
+        'frame_width': 224
     },
     
     # Spot instances (cheaper but can be interrupted)
@@ -125,9 +108,7 @@ print("\n🚀 Submitting training job...")
 
 # We only need one channel ('training') because it contains both videos and CSVs
 estimator.fit({
-    'train': train_input,   
-    'val': val_input,       
-    'csv': csv_input        
+    'training': training_input
 }, wait=True)
 
 # estimator.fit({

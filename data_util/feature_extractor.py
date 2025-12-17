@@ -19,56 +19,53 @@ cv2.setNumThreads(0)
 # ==========================================
 # 1. INSTALL DEPENDENCIES
 # ==========================================
+def install_dependencies():
+    # Check if already installed to avoid redundant calls in sub-processes
+    try:
+        import mediapipe as mp
+        from tqdm import tqdm
+
+    except ImportError:
+        print("⚙️ Installing dependencies...")
+        subprocess.check_call(["apt-get", "update"], stdout=subprocess.DEVNULL)
+        subprocess.check_call(["apt-get", "install", "-y", "ffmpeg", "libgl1-mesa-glx", "wget"], stdout=subprocess.DEVNULL)
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "mediapipe", "pandas", "tqdm", "torchaudio"], stdout=subprocess.DEVNULL)
+
+
+# # ==========================================
+# # 1. INSTALL DEPENDENCIES (ROBUST FIX)
+# # ==========================================
 # def install_dependencies():
-#     # Check if already installed to avoid redundant calls in sub-processes
+#     import subprocess
+#     import sys
+    
+#     # Check if already installed
 #     try:
 #         import mediapipe
-#         from tqdm import tqdm
-
+#         import cv2
 #     except ImportError:
-#         print("⚙️ Installing dependencies...")
-#         subprocess.check_call(["apt-get", "update"], stdout=subprocess.DEVNULL)
-#         subprocess.check_call(["apt-get", "install", "-y", "ffmpeg", "libgl1-mesa-glx", "wget"], stdout=subprocess.DEVNULL)
-#         subprocess.check_call([sys.executable, "-m", "pip", "install", "mediapipe", "pandas", "tqdm", "torchaudio"], stdout=subprocess.DEVNULL)
+#         # 1. Install FFmpeg via Conda
+#         try:
+#             subprocess.check_call(["conda", "install", "-y", "ffmpeg"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+#         except Exception:
+#             # If Conda fails, we continue. OpenCV often bundles its own FFmpeg.
+#             pass
 
-# ==========================================
-# 1. INSTALL DEPENDENCIES
-# ==========================================
-# ==========================================
-# 1. INSTALL DEPENDENCIES (ROBUST FIX)
-# ==========================================
-def install_dependencies():
-    import subprocess
-    import sys
-    
-    # Check if already installed
-    try:
-        import mediapipe
-        import cv2
-    except ImportError:
-        # 1. Install FFmpeg via Conda
-        try:
-            subprocess.check_call(["conda", "install", "-y", "ffmpeg"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except Exception:
-            # If Conda fails, we continue. OpenCV often bundles its own FFmpeg.
-            pass
-
-        # 2. Install Python libs
-        packages = [
-            "mediapipe", 
-            "pandas", 
-            "tqdm", 
-            "torchaudio", 
-            "opencv-python-headless"
-        ]
+#         # 2. Install Python libs
+#         packages = [
+#             "mediapipe", 
+#             "pandas", 
+#             "tqdm", 
+#             "torchaudio", 
+#             "opencv-python-headless"
+#         ]
         
-        subprocess.check_call([
-            sys.executable, "-m", "pip", "install", 
-            "--no-cache-dir" 
-        ] + packages, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+#         subprocess.check_call([
+#             sys.executable, "-m", "pip", "install", 
+#             "--no-cache-dir" 
+#         ] + packages, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-
-install_dependencies()
+# install_dependencies()
 import mediapipe as mp
 import torchaudio
 from tqdm import tqdm
@@ -316,7 +313,7 @@ if __name__ == "__main__":
     # Determine Workers
     # Leave 2 cores free for OS and I/O management
     # max_workers = max(1, multiprocessing.cpu_count() - 2)
-    max_workers = 32
+    max_workers = 12
     print(f"🚀 Launching extraction with {max_workers} parallel workers.")
 
     splits = [('train', args.train_csv), ('val', args.val_csv), ('test', args.test_csv)]
