@@ -448,43 +448,128 @@ class FocalLoss(nn.Module):
         else:
             return focal_loss
 
+# def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch, args, scaler):
+#     """Train for one epoch"""
+#     model.train()
+
+#     loss_global = AvgrageMeter()
+#     loss_vl = AvgrageMeter()
+#     loss_face = AvgrageMeter()
+#     loss_al = AvgrageMeter()
+
+#     correct = 0
+#     total = 0
+
+#     aux_weight = 0.2
+
+#     for i, sample_batched in enumerate(dataloader):
+#         # print(f"Batch {i+1} loaded", flush=True) 
+#         # Get data
+#         vision_behaviour = sample_batched['vision_behaviour'].to(device)  # (B, T, 64)
+#         vision_face = sample_batched['vision_face'].to(device)  # (B, C, T, H, W)
+#         audio_mel = sample_batched['audio_mel'].to(device)  # (B, 3, n_mels, time)
+#         audio_wave = sample_batched['audio_wave'].to(device)  # (B, audio_length)
+#         labels = sample_batched['label'].to(device)  # (B,)
+        
+#         if torch.isnan(audio_mel).any() or torch.isinf(audio_mel).any():
+#             print(f"⚠️ Warning: Batch {i} contains NaN/Inf audio. Skipping.")
+#             continue
+            
+#         # Clamp audio to safe range (e.g., -100 to 100) to prevent log(0) explosions
+#         audio_mel = torch.clamp(audio_mel, min=-100.0, max=100.0)
+        
+#         # Forward pass
+#         optimizer.zero_grad()
+
+#         with autocast():
+#             # Call fusion model with all 4 modalities
+#             fused_logit, vl_logit, face_logit, al_logit, feat_list = model(
+#                 vision_behaviour, vision_face, audio_mel, audio_wave
+#             )
+
+#             # Calculate losses
+#             global_loss = criterion(fused_logit, labels)
+
+#             if vl_logit is not None:
+#                 vl_loss = criterion(vl_logit, labels)
+#                 face_loss = criterion(face_logit, labels)
+#                 al_loss = criterion(al_logit, labels)
+
+#                 # Focus on Main, treat others as hints (0.2)
+#                 loss = global_loss + aux_weight * (vl_loss + face_loss + al_loss)
+#                 # loss = global_loss + vl_loss + face_loss + al_loss
+#             else:
+#                 loss = global_loss
+#                 vl_loss = torch.tensor(0.0)
+#                 face_loss = torch.tensor(0.0)
+#                 al_loss = torch.tensor(0.0)
+
+#         if torch.isnan(loss) or torch.isinf(loss):
+#             print(f"⚠️ Warning: Batch {i} loss is NaN. Skipping optimizer step.")
+#             # Clear cache if this happens
+#             torch.cuda.empty_cache()
+#             continue
+
+#         # BACKWARD PASS WITH SCALER
+#         # Scales loss to prevent underflow in float16
+#         scaler.scale(loss).backward()
+#         # loss.backward()
+
+#         # Gradient clipping (Unscale first)
+#         scaler.unscale_(optimizer)
+#         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)
+
+#         # Optimizer Step
+#         scaler.step(optimizer)
+#         scaler.update()
+#         # optimizer.step()
+
+#         # Statistics
+#         n = vision_face.size(0)
+#         loss_global.update(global_loss.item(), n)
+#         if vl_logit is not None:
+#             loss_vl.update(vl_loss.item(), n)
+#             loss_face.update(face_loss.item(), n)
+#             loss_al.update(al_loss.item(), n)
+
+#         _, predicted = torch.max(fused_logit.data, 1)
+#         total += labels.size(0)
+#         correct += (predicted == labels).sum().item()
+
+#         if (i + 1) % args.echo_batches == 0:
+#             print(f'Epoch [{epoch}], Step [{i + 1}/{len(dataloader)}], '
+#                   f'Loss_global: {loss_global.avg:.4f}, Loss_vl: {loss_vl.avg:.4f}, '
+#                   f'Loss_face: {loss_face.avg:.4f}, Loss_al: {loss_al.avg:.4f}, '
+#                   f'Acc: {100 * correct / total:.2f}%')
+
+#     epoch_acc = 100 * correct / total
+#     return loss_global.avg, epoch_acc
+
 def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch, args, scaler):
-    """Train for one epoch"""
     model.train()
 
     loss_global = AvgrageMeter()
     loss_vl = AvgrageMeter()
     loss_face = AvgrageMeter()
-    loss_al = AvgrageMeter()
+    # loss_al = AvgrageMeter()
 
     correct = 0
     total = 0
-
     aux_weight = 0.2
 
     for i, sample_batched in enumerate(dataloader):
-        # print(f"Batch {i+1} loaded", flush=True) 
-        # Get data
-        vision_behaviour = sample_batched['vision_behaviour'].to(device)  # (B, T, 64)
-        vision_face = sample_batched['vision_face'].to(device)  # (B, C, T, H, W)
-        audio_mel = sample_batched['audio_mel'].to(device)  # (B, 3, n_mels, time)
-        audio_wave = sample_batched['audio_wave'].to(device)  # (B, audio_length)
-        labels = sample_batched['label'].to(device)  # (B,)
+        # 1. LOAD ONLY VISUAL DATA
+        vision_behaviour = sample_batched['vision_behaviour'].to(device)
+        vision_face = sample_batched['vision_face'].to(device)
+        labels = sample_batched['label'].to(device)
         
-        if torch.isnan(audio_mel).any() or torch.isinf(audio_mel).any():
-            print(f"⚠️ Warning: Batch {i} contains NaN/Inf audio. Skipping.")
-            continue
-            
-        # Clamp audio to safe range (e.g., -100 to 100) to prevent log(0) explosions
-        audio_mel = torch.clamp(audio_mel, min=-100.0, max=100.0)
-        
-        # Forward pass
+     
         optimizer.zero_grad()
 
         with autocast():
-            # Call fusion model with all 4 modalities
-            fused_logit, vl_logit, face_logit, al_logit, feat_list = model(
-                vision_behaviour, vision_face, audio_mel, audio_wave
+            # Pass None for audio args
+            fused_logit, vl_logit, face_logit, _, feat_list = model(
+                vision_behaviour, vision_face, audio_mel=None, audio_wave=None
             )
 
             # Calculate losses
@@ -493,44 +578,27 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch, args
             if vl_logit is not None:
                 vl_loss = criterion(vl_logit, labels)
                 face_loss = criterion(face_logit, labels)
-                al_loss = criterion(al_logit, labels)
 
-                # Focus on Main, treat others as hints (0.2)
-                loss = global_loss + aux_weight * (vl_loss + face_loss + al_loss)
-                # loss = global_loss + vl_loss + face_loss + al_loss
+                # Only Global + Visual + Face
+                loss = global_loss + aux_weight * (vl_loss + face_loss)
             else:
                 loss = global_loss
                 vl_loss = torch.tensor(0.0)
                 face_loss = torch.tensor(0.0)
-                al_loss = torch.tensor(0.0)
 
-        if torch.isnan(loss) or torch.isinf(loss):
-            print(f"⚠️ Warning: Batch {i} loss is NaN. Skipping optimizer step.")
-            # Clear cache if this happens
-            torch.cuda.empty_cache()
-            continue
-
-        # BACKWARD PASS WITH SCALER
-        # Scales loss to prevent underflow in float16
+        # 2. BACKPROP
         scaler.scale(loss).backward()
-        # loss.backward()
-
-        # Gradient clipping (Unscale first)
         scaler.unscale_(optimizer)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)
-
-        # Optimizer Step
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         scaler.step(optimizer)
         scaler.update()
-        # optimizer.step()
 
-        # Statistics
+        # 3. STATS
         n = vision_face.size(0)
         loss_global.update(global_loss.item(), n)
         if vl_logit is not None:
             loss_vl.update(vl_loss.item(), n)
             loss_face.update(face_loss.item(), n)
-            loss_al.update(al_loss.item(), n)
 
         _, predicted = torch.max(fused_logit.data, 1)
         total += labels.size(0)
@@ -538,8 +606,9 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch, args
 
         if (i + 1) % args.echo_batches == 0:
             print(f'Epoch [{epoch}], Step [{i + 1}/{len(dataloader)}], '
-                  f'Loss_global: {loss_global.avg:.4f}, Loss_vl: {loss_vl.avg:.4f}, '
-                  f'Loss_face: {loss_face.avg:.4f}, Loss_al: {loss_al.avg:.4f}, '
+                  f'Loss_global: {loss_global.avg:.4f}, '
+                  f'Loss_vl: {loss_vl.avg:.4f}, '
+                  f'Loss_face: {loss_face.avg:.4f}, '
                   f'Acc: {100 * correct / total:.2f}%')
 
     epoch_acc = 100 * correct / total
@@ -621,390 +690,6 @@ def load_checkpoint(model, optimizer, scheduler_warmup, scheduler_cosine, device
         print(f"🔄 Resumed from epoch {ckpt['epoch'] + 1}")
         return ckpt['epoch'] + 1, ckpt['current_step'], ckpt['best_val_acc'], min_val_loss
     return 0, 0, 0.0, min_val_loss
-
-# def compute_class_weights(dataset):
-#     """
-#     Fast version - directly access labels without loading full samples
-#     Only use if the dataset has a direct label access method
-#     """
-#     print(f"\n{'='*60}")
-#     print(f"📊 Computing Class Weights (Fast Mode)...")
-#     print(f"{'='*60}")
-    
-#     # Check if dataset has direct label access
-#     if hasattr(dataset, 'labels'):
-#         labels = dataset.labels
-#         print(f"  ✅ Using pre-loaded labels from dataset")
-#     else:
-#         print(f"  ⚠️ No direct label access, falling back to full loading")
-#         return compute_class_weights(dataset)
-    
-#     class_counts = np.bincount(labels)
-#     total = sum(class_counts)
-#     num_classes = len(class_counts)
-    
-#     print(f"\n📊 Dataset Statistics:")
-#     print(f"  Total samples: {total}")
-#     print(f"  Class 0 (Truth): {class_counts[0]} samples ({100*class_counts[0]/total:.1f}%)")
-#     print(f"  Class 1 (Lie):   {class_counts[1]} samples ({100*class_counts[1]/total:.1f}%)")
-#     print(f"  Imbalance ratio: {max(class_counts)/min(class_counts):.2f}:1")
-    
-#     # Compute inverse frequency weights
-#     weights = total / (num_classes * class_counts)
-#     weights = weights / weights.sum() * num_classes
-    
-#     print(f"  Class weights: [Truth: {weights[0]:.3f}, Lie: {weights[1]:.3f}]")
-#     print(f"{'='*60}\n")
-    
-#     return torch.FloatTensor(weights)
-
-# def main(args):
-
-#     # Setup
-#     setup_seed(42)
-#     device = torch.device(f'cuda:{args.gpu}' if torch.cuda.is_available() else 'cpu')
-
-#     # Create log directory
-#     # os.makedirs(args.log, exist_ok=True)
-#     # log_file = open(os.path.join(args.log, 'training_log.txt'), 'a')  # 'a' for resume
-#     log_file = open(os.path.join(LOG_DIR, 'training_log.txt'), 'a', buffering=1)
-
-#     print(f"Using device: {device}")
-#     print(f"Arguments: {args}")
-#     log_file.write(f"Arguments: {args}\n")
-
-#     # --- Training Set ---
-#     if args.train_list:
-#         print(f"\n  Initializing Training Dataset from CSV: {args.train_list}")
-#         if not os.path.exists(args.train_list):
-#             raise FileNotFoundError(f"Training CSV not found: {args.train_list}")
-            
-#         train_dataset = VideoDeceptionDataset(
-#             csv_file=args.train_list,
-#             data_root=args.train_root,
-#             num_frames=args.num_frames,
-#             frame_size=(args.frame_height, args.frame_width),
-#             mode='train'
-#         )
-#     elif args.train_root:
-#         print(f"\n🏗️  Initializing Training Dataset from Folder: {args.train_root}")
-#         train_dataset = VideoDeceptionDataset(
-#             data_root=args.train_root,
-#             num_frames=args.num_frames,
-#             frame_size=(args.frame_height, args.frame_width),
-#             mode='train'
-#         )
-#     else:
-#         raise ValueError("❌ Error: You must provide either --train_list (CSV) or --train_root (Folder)")
-
-#     # --- Validation Set ---
-#     if args.val_list:
-#         print(f"\n🏗️  Initializing Validation Dataset from CSV: {args.val_list}")
-#         if not os.path.exists(args.val_list):
-#             print(f"⚠️ Warning: Validation CSV not found at {args.val_list}. skipping validation.")
-#             val_dataset = None
-#         else:
-#             val_dataset = VideoDeceptionDataset(
-#                 csv_file=args.val_list,
-#                 data_root=args.train_root,
-#                 num_frames=args.num_frames,
-#                 frame_size=(args.frame_height, args.frame_width),
-#                 mode='val'
-#             )
-#     elif args.val_root:
-#         val_dataset = VideoDeceptionDataset(
-#             data_root=args.val_root,
-#             num_frames=args.num_frames,
-#             frame_size=(args.frame_height, args.frame_width),
-#             mode='val'
-#         )
-#     else:
-#         print("⚠️ No validation data provided.")
-#         val_dataset = None
-#     # if args.train_root:
-#     #     train_dataset = VideoDeceptionDataset(
-#     #         csv_file=args.train_list,
-#     #         data_root=args.train_root,
-#     #         num_frames=args.num_frames,
-#     #         frame_size=(args.frame_height, args.frame_width),
-#     #         audio_length=args.audio_length,
-#     #         sample_rate=args.sample_rate,
-#     #         n_mels=args.n_mels,
-#     #         mode='train'
-#     #     )
-#     # else:
-#     #     train_dataset = VideoDeceptionDataset(
-#     #         annotation_file=args.train_list,
-#     #         num_frames=args.num_frames,
-#     #         frame_size=(args.frame_height, args.frame_width),
-#     #         audio_length=args.audio_length,
-#     #         sample_rate=args.sample_rate,
-#     #         n_mels=args.n_mels,
-#     #         mode='train'
-#     #     )
-
-#     # if args.val_root:
-#     #     val_dataset = VideoDeceptionDataset(
-#     #         csv_file=args.train_list,
-#     #         data_root=args.val_root,
-#     #         num_frames=args.num_frames,
-#     #         frame_size=(args.frame_height, args.frame_width),
-#     #         audio_length=args.audio_length,
-#     #         sample_rate=args.sample_rate,
-#     #         n_mels=args.n_mels,
-#     #         mode='val'
-#     #     )
-#     # else:
-#     #     val_dataset = VideoDeceptionDataset(
-#     #         annotation_file=args.val_list,
-#     #         num_frames=args.num_frames,
-#     #         frame_size=(args.frame_height, args.frame_width),
-#     #         audio_length=args.audio_length,
-#     #         sample_rate=args.sample_rate,
-#     #         n_mels=args.n_mels,
-#     #         mode='val'
-#     #     )
-
-#     print("============= Class Weight ==========")
-#     class_weights = compute_class_weights(train_dataset)
-#     print(class_weights)
-   
-#     # Create dataloaders
-#     train_loader = DataLoader(
-#         train_dataset,
-#         batch_size=args.batchsize,
-#         shuffle=True,
-#         num_workers=args.num_workers,
-#         pin_memory=True,
-#         drop_last=True
-#     )
-
-#     val_loader = DataLoader(
-#         val_dataset,
-#         batch_size=args.batchsize,
-#         shuffle=False,
-#         num_workers=args.num_workers,
-#         pin_memory=True
-#     )
-
-#     # Add device to args for model
-#     args.device = device
-
-#     print(f"\n  Creating Model: {args.model_arch.upper()}")
-
-#     if args.model_arch == 'normal':
-#         # The robust MULT transformer model (Best for 100k data)
-#         model = FusionModule(args)
-#     elif args.model_arch == 'lite':
-#         # The intermediate model
-#         model = LightweightFusionModule(args)
-#     elif args.model_arch == 'minimal':
-#         # The very small model (Best for debugging/small data)
-#         model = MinimalFusionModule(args)
-#     else:
-#         raise ValueError(f"❌ Unknown model architecture: {args.model_arch}")
-
-#     # ###### FREEZING MODEL
-#     # for param in model.audio_model.parameters():
-#     #     param.requires_grad = False
-#     # for param in model.face_model.parameters():
-#     #     param.requires_grad = False
-
-#     model = model.to(device)
-
-#     if torch.cuda.device_count() > 1:
-#         print(f"\n🚀 Detected {torch.cuda.device_count()} GPUs! Activating DataParallel.")
-#         model = nn.DataParallel(model)
-
-#     print(f"Model created with {sum(p.numel() for p in model.parameters())} parameters")
-#     log_file.write(f"Model parameters: {sum(p.numel() for p in model.parameters())}\n")
-
-#     ### Focal loss
-#     # criterion = FocalLoss(
-#     #     alpha=class_weights.to(device),
-#     #     gamma=0.3  # Focusing parameter 2.0
-#     # )
-
-#     # Loss and optimizer
-#     soft_weights = torch.tensor([1.0, 1.91]).to(device)
-#     criterion = nn.CrossEntropyLoss(weight=soft_weights)
-#     optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-3)
-
-#     # Learning rate scheduler
-#     warmup_epochs = 1
-#     steps_per_epoch = len(train_loader)
-#     total_steps = args.max_epochs * steps_per_epoch
-#     warmup_steps = warmup_epochs * steps_per_epoch
-
-#     def lr_lambda(current_step):
-#         if current_step < warmup_steps:
-#             return float(current_step) / float(max(1, warmup_steps))
-#         else:
-#             return 1.0
-
-#     scheduler_warmup = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
-#     scheduler_cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
-#         optimizer, T_max=total_steps - warmup_steps, eta_min=1e-6
-#     )
-
-#     # LOAD CHECKPOINT IF RESUMING
-#     start_epoch, current_step, best_val_acc, min_val_loss = load_checkpoint(
-#         model, optimizer, scheduler_warmup, scheduler_cosine, device
-#     )
-
-#     scaler = GradScaler()
-    
-#     val_loss = min_val_loss 
-
-#     # Training loop
-#     for epoch in range(start_epoch, args.max_epochs):
-#         print(f"\n{'=' * 50}")
-#         print(f"Epoch {epoch + 1}/{args.max_epochs}")
-#         print(f"{'=' * 50}")
-
-#         # if epoch == 2:
-#         #     if isinstance(model, nn.DataParallel):
-#         #         actual_model = model.module
-#         #     else:
-#         #         actual_model = model
-#         #     print(" Unfreezing encoders...")
-#         #     for param in actual_model.audio_model.parameters():
-#         #         param.requires_grad = True
-#         #     for param in actual_model.face_model.parameters():
-#         #         param.requires_grad = True
-
-#         # Train
-#         train_loss, train_acc = train_one_epoch(
-#             model, train_loader, criterion, optimizer, device, epoch + 1, args, scaler
-#         )
-
-#         print(f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2f}%")
-#         log_file.write(f"Epoch {epoch + 1} - Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2f}%\n")
-
-#         # Update learning rate
-#         for _ in range(steps_per_epoch):
-#             if current_step < warmup_steps:
-#                 scheduler_warmup.step()
-#             else:
-#                 scheduler_cosine.step()
-#             current_step += 1
-
-#         # Validate
-#         if (epoch + 1) % args.val_interval == 0:
-#             # val_loss, val_acc, val_preds, val_labels, val_scores = validate(
-#             #     model, val_loader, criterion, device
-#             # )
-#             val_loss, val_acc, val_f1, val_preds, val_labels, val_scores = validate(
-#                 model, val_loader, criterion, device
-#             )
-
-#             # print(f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%, Val F1: {val_f1:.4f}")
-#             print(f"Epoch {epoch + 1} - Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%, Val F1: {val_f1:.4f}")
-#             log_file.write(f"Epoch {epoch + 1} - Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%, Val F1: {val_f1:.4f}\n")
-#             # print(f"Epoch [{epoch + 1}] Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%")
-#             # log_file.write(f"Epoch {epoch + 1} - Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%\n")
-
-#             # Save best model - accuracy
-#             if val_acc > best_val_acc:
-#                 best_val_acc = val_acc
-
-#                 # Unwrap model before saving Best Model
-#                 if isinstance(model, nn.DataParallel):
-#                     model_to_save = model.module
-#                 else:
-#                     model_to_save = model
-                
-#                 # filename = f'best_model_epoch_{epoch + 1}.pt'
-#                 # filename = 'best_model_acc.pt'
-#                 filename = f'best_model_acc_{int(val_acc)}_ep{epoch+1}.pt'
-#                 save_path = os.path.join(CHECKPOINT_DIR, filename)
-
-#                 # Save to checkpoint dir (synced to S3)
-#                 # os.makedirs(CHECKPOINT_DIR, exist_ok=True)
-#                 torch.save({
-#                     'epoch': epoch + 1,
-#                     'model_state_dict': model_to_save.state_dict(),
-#                     'optimizer_state_dict': optimizer.state_dict(),
-#                     'best_acc': best_val_acc,
-#                     'val_loss': val_loss,
-#                     'args': vars(args)
-#                 }, save_path)
-                
-#                 # # Also save to log dir
-#                 # torch.save({
-#                 #     'epoch': epoch + 1,
-#                 #     'model_state_dict': model_to_save.state_dict(),
-#                 #     'optimizer_state_dict': optimizer.state_dict(),
-#                 #     'best_acc': best_val_acc,
-#                 # }, os.path.join(CHECKPOINT_DIR, 'best_model.pt'))
-#                 print(f"🏆 Saved best model with accuracy: {best_val_acc:.2f}%")
-#                 log_file.write(f"Saved best model with accuracy: {best_val_acc:.2f}%\n")
-            
-#             # Save best model - val loss
-#             if val_loss < min_val_loss:
-                
-#                 min_val_loss = val_loss
-
-#                 # Save filename
-#                 # filename = 'best_model_loss.pt'
-#                 filename = f'best_model_loss_ep{epoch+1}_acc{int(val_acc)}.pt'
-
-#                 save_path = os.path.join(CHECKPOINT_DIR, filename)
-
-#                 # Unwrap model before saving Best Model
-#                 if isinstance(model, nn.DataParallel):
-#                     model_to_save = model.module
-#                 else:
-#                     model_to_save = model
-                
-#                 # Save to checkpoint dir (synced to S3)
-#                 # os.makedirs(CHECKPOINT_DIR, exist_ok=True)
-#                 torch.save({
-#                     'epoch': epoch + 1,
-#                     'model_state_dict': model_to_save.state_dict(),
-#                     'optimizer_state_dict': optimizer.state_dict(),
-#                     'best_acc': best_val_acc,
-#                     'min_val_loss': min_val_loss,
-#                     'args': vars(args)
-#                 }, save_path)
-                
-#                 print(f" New Lowest Loss: {min_val_loss:.4f} (Saved to {filename})")
-#                 log_file.write(f"Saved Lowest Loss model: {min_val_loss:.4f}\n")
-
-#         # Unwrap model before passing to custom save function
-#         if isinstance(model, nn.DataParallel):
-#             model_for_ckpt = model.module
-#         else:
-#             model_for_ckpt = model
-#         # SAVE CHECKPOINT AFTER EACH EPOCH
-#         save_checkpoint(
-#             model_for_ckpt, optimizer, epoch, current_step, best_val_acc,
-#             scheduler_warmup, scheduler_cosine, warmup_steps, min_val_loss
-#         )
-
-#         log_file.flush()
-
-#     # Unwrap model before final save
-#     if isinstance(model, nn.DataParallel):
-#         final_model_to_save = model.module
-#     else:
-#         final_model_to_save = model
-
-#     # SAVE FINAL MODEL TO SAGEMAKER OUTPUT PATH
-#     # os.makedirs(MODEL_DIR, exist_ok=True)
-#     # torch.save(final_model_to_save.state_dict(), os.path.join(MODEL_DIR, 'model.pt'))
-    
-#     torch.save({
-#         'model_state_dict': final_model_to_save.state_dict(),
-#         'args': vars(args),
-#         'best_acc': best_val_acc,
-#         'val_loss': val_loss
-#     }, os.path.join(MODEL_DIR, 'model_full.pt'))
-
-#     print(f"\n✅ Training completed! Best validation accuracy: {best_val_acc:.2f}%")
-#     print(f"📦 Model saved to {MODEL_DIR}")
-#     log_file.write(f"\nBest validation accuracy: {best_val_acc:.2f}%\n")
-#     log_file.close()
 
 def main(args):
     """
