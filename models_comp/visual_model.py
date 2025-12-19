@@ -139,7 +139,7 @@ class AU_GAZE_Affect7_LSTM_MLP(nn.Module):
         x_va   = x[:, :, 48:50]   # [B, T, 2]
 
         # CHECK:
-        print(f"DEBUG: x_gaze shape: {x_gaze.shape}")
+        # print(f"DEBUG: x_gaze shape: {x_gaze.shape}")
         if x_gaze.shape[-1] == 0:
             print("ERROR: Gaze features are empty! Check your data loader.")
 

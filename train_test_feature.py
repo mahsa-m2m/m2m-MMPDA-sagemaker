@@ -448,103 +448,6 @@ class FocalLoss(nn.Module):
         else:
             return focal_loss
 
-# def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch, args, scaler):
-#     """Train for one epoch"""
-#     model.train()
-
-#     loss_global = AvgrageMeter()
-#     loss_vl = AvgrageMeter()
-#     loss_face = AvgrageMeter()
-#     loss_al = AvgrageMeter()
-
-#     correct = 0
-#     total = 0
-
-#     aux_weight = 0.2
-
-#     for i, sample_batched in enumerate(dataloader):
-#         # print(f"Batch {i+1} loaded", flush=True) 
-#         # Get data
-#         vision_behaviour = sample_batched['vision_behaviour'].to(device)  # (B, T, 64)
-#         vision_face = sample_batched['vision_face'].to(device)  # (B, C, T, H, W)
-#         audio_mel = sample_batched['audio_mel'].to(device)  # (B, 3, n_mels, time)
-#         audio_wave = sample_batched['audio_wave'].to(device)  # (B, audio_length)
-#         labels = sample_batched['label'].to(device)  # (B,)
-        
-#         if torch.isnan(audio_mel).any() or torch.isinf(audio_mel).any():
-#             print(f"⚠️ Warning: Batch {i} contains NaN/Inf audio. Skipping.")
-#             continue
-            
-#         # Clamp audio to safe range (e.g., -100 to 100) to prevent log(0) explosions
-#         audio_mel = torch.clamp(audio_mel, min=-100.0, max=100.0)
-        
-#         # Forward pass
-#         optimizer.zero_grad()
-
-#         with autocast():
-#             # Call fusion model with all 4 modalities
-#             fused_logit, vl_logit, face_logit, al_logit, feat_list = model(
-#                 vision_behaviour, vision_face, audio_mel, audio_wave
-#             )
-
-#             # Calculate losses
-#             global_loss = criterion(fused_logit, labels)
-
-#             if vl_logit is not None:
-#                 vl_loss = criterion(vl_logit, labels)
-#                 face_loss = criterion(face_logit, labels)
-#                 al_loss = criterion(al_logit, labels)
-
-#                 # Focus on Main, treat others as hints (0.2)
-#                 loss = global_loss + aux_weight * (vl_loss + face_loss + al_loss)
-#                 # loss = global_loss + vl_loss + face_loss + al_loss
-#             else:
-#                 loss = global_loss
-#                 vl_loss = torch.tensor(0.0)
-#                 face_loss = torch.tensor(0.0)
-#                 al_loss = torch.tensor(0.0)
-
-#         if torch.isnan(loss) or torch.isinf(loss):
-#             print(f"⚠️ Warning: Batch {i} loss is NaN. Skipping optimizer step.")
-#             # Clear cache if this happens
-#             torch.cuda.empty_cache()
-#             continue
-
-#         # BACKWARD PASS WITH SCALER
-#         # Scales loss to prevent underflow in float16
-#         scaler.scale(loss).backward()
-#         # loss.backward()
-
-#         # Gradient clipping (Unscale first)
-#         scaler.unscale_(optimizer)
-#         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)
-
-#         # Optimizer Step
-#         scaler.step(optimizer)
-#         scaler.update()
-#         # optimizer.step()
-
-#         # Statistics
-#         n = vision_face.size(0)
-#         loss_global.update(global_loss.item(), n)
-#         if vl_logit is not None:
-#             loss_vl.update(vl_loss.item(), n)
-#             loss_face.update(face_loss.item(), n)
-#             loss_al.update(al_loss.item(), n)
-
-#         _, predicted = torch.max(fused_logit.data, 1)
-#         total += labels.size(0)
-#         correct += (predicted == labels).sum().item()
-
-#         if (i + 1) % args.echo_batches == 0:
-#             print(f'Epoch [{epoch}], Step [{i + 1}/{len(dataloader)}], '
-#                   f'Loss_global: {loss_global.avg:.4f}, Loss_vl: {loss_vl.avg:.4f}, '
-#                   f'Loss_face: {loss_face.avg:.4f}, Loss_al: {loss_al.avg:.4f}, '
-#                   f'Acc: {100 * correct / total:.2f}%')
-
-#     epoch_acc = 100 * correct / total
-#     return loss_global.avg, epoch_acc
-
 def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch, args, scaler):
     model.train()
 
@@ -614,8 +517,52 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch, args
     epoch_acc = 100 * correct / total
     return loss_global.avg, epoch_acc
 
+# def validate(model, dataloader, criterion, device):
+#     """Validate the model with Accuracy and F1 Score"""
+#     model.eval()
+
+#     loss_meter = AvgrageMeter()
+#     all_preds = []
+#     all_labels = []
+#     all_scores = []
+
+#     with torch.no_grad():
+#         for sample_batched in dataloader:
+#             vision_behaviour = sample_batched['vision_behaviour'].to(device)
+#             vision_face = sample_batched['vision_face'].to(device)
+#             audio_mel = sample_batched['audio_mel'].to(device)
+#             audio_wave = sample_batched['audio_wave'].to(device)
+#             labels = sample_batched['label'].to(device)
+
+#             # Forward pass
+#             fused_logit, _, _, _, _ = model(
+#                 vision_behaviour, vision_face, audio_mel, audio_wave
+#             )
+
+#             loss = criterion(fused_logit, labels)
+#             loss_meter.update(loss.item(), vision_face.size(0))
+
+#             probs = F.softmax(fused_logit, dim=1)
+#             _, predicted = torch.max(fused_logit.data, 1)
+
+#             # Move to CPU for sklearn metrics
+#             all_preds.extend(predicted.cpu().numpy())
+#             all_labels.extend(labels.cpu().numpy())
+#             all_scores.extend(probs[:, 1].cpu().numpy())
+
+#     # Calculate Accuracy
+#     correct = sum([p == l for p, l in zip(all_preds, all_labels)])
+#     accuracy = 100 * correct / len(all_labels)
+
+#     # Calculate F1 Score
+#     # average='weighted' accounts for class imbalance (Truth > Deceptive)
+#     f1 = f1_score(all_labels, all_preds, average='weighted')
+
+#     # Return f1 as well
+#     return loss_meter.avg, accuracy, f1, all_preds, all_labels, all_scores
+
 def validate(model, dataloader, criterion, device):
-    """Validate the model with Accuracy and F1 Score"""
+    """Validate the model with Accuracy and F1 Score (Vision + Face only)"""
     model.eval()
 
     loss_meter = AvgrageMeter()
@@ -625,20 +572,24 @@ def validate(model, dataloader, criterion, device):
 
     with torch.no_grad():
         for sample_batched in dataloader:
+            # 1. Load ONLY Visual and Face features
             vision_behaviour = sample_batched['vision_behaviour'].to(device)
             vision_face = sample_batched['vision_face'].to(device)
-            audio_mel = sample_batched['audio_mel'].to(device)
-            audio_wave = sample_batched['audio_wave'].to(device)
             labels = sample_batched['label'].to(device)
-
-            # Forward pass
+            
+            # 2. Forward pass (Explicitly pass None for audio)
             fused_logit, _, _, _, _ = model(
-                vision_behaviour, vision_face, audio_mel, audio_wave
+                vision_behaviour, 
+                vision_face, 
+                audio_mel=None, 
+                audio_wave=None
             )
 
+            # Calculate Loss
             loss = criterion(fused_logit, labels)
             loss_meter.update(loss.item(), vision_face.size(0))
 
+            # Calculate Predictions
             probs = F.softmax(fused_logit, dim=1)
             _, predicted = torch.max(fused_logit.data, 1)
 
@@ -652,10 +603,8 @@ def validate(model, dataloader, criterion, device):
     accuracy = 100 * correct / len(all_labels)
 
     # Calculate F1 Score
-    # average='weighted' accounts for class imbalance (Truth > Deceptive)
     f1 = f1_score(all_labels, all_preds, average='weighted')
 
-    # Return f1 as well
     return loss_meter.avg, accuracy, f1, all_preds, all_labels, all_scores
 
 def save_checkpoint(model, optimizer, epoch, current_step, best_val_acc, scheduler_warmup, scheduler_cosine, warmup_steps, min_val_loss):

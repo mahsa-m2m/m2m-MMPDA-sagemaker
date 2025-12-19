@@ -78,15 +78,16 @@ estimator = PyTorch(
     # CLI args
     hyperparameters={
         'batchsize': 16,
-        'max_epochs': 30,
+        'max_epochs': 15,
         'fusion_type': 'mult',
         'common_dim': 128,
         'num_frames': 64,
         'num_heads': 8,
-        'mult_layer': 4,
+        'mult_layer': 2,
         'model_arch': 'normal',
         'lr': 1e-4,
         'num_workers': 4,
+        'modalities': 'vf',
 
         'train_list': '/opt/ml/input/data/csv/train.csv',
         'train_root': '/opt/ml/input/data/train',  # Contains .pt files
