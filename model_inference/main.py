@@ -98,7 +98,7 @@ class FusionInferenceService:
         Scalable method for list of videos.
         Args:
             video_paths: List of file paths
-            batch_size: How many videos to push to GPU at once (Try 8, 16, 32)
+            batch_size: How many videos to push to GPU at once
             num_workers: CPU cores for parallel preprocessing
         """
         dataset = VideoInferenceDataset(video_paths, self.preprocessor)
