@@ -9,12 +9,14 @@ import tempfile
 import random
 import config
 import io
+import math
+
 
 class InferencePreprocessor:
     def __init__(self):
         # 1. Store the class reference
         self.mp_face_mesh = mp.solutions.face_mesh
-        self.face_mesh = None  # Crucial: Start as None
+        self.face_mesh = None  
         
         # Audio Transforms (Safe to pickle/copy across workers)
         self.mel_transform = torchaudio.transforms.MelSpectrogram(
@@ -102,38 +104,6 @@ class InferencePreprocessor:
             
         return np.stack(all_feats)
 
-    # --- HELPER FUNCTIONS ---
-
-    # def _extract_audio(self, video_path):
-    #     """Extracts audio with silence fallback"""
-    #     temp_wav = None
-    #     try:
-    #         with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tf:
-    #             temp_wav = tf.name
-            
-    #         cmd = ['ffmpeg', '-i', video_path, '-vn', '-acodec', 'pcm_s16le',
-    #                '-ar', str(config.SAMPLE_RATE), '-ac', '1', '-y', temp_wav]
-    #         subprocess.run(cmd, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL, check=True)
-
-    #         if os.path.exists(temp_wav) and os.path.getsize(temp_wav) > 0:
-    #             waveform, sr = torchaudio.load(temp_wav)
-    #         else:
-    #             raise ValueError("Empty audio")
-
-    #         if waveform.shape[1] < config.AUDIO_LENGTH:
-    #             waveform = torch.nn.functional.pad(waveform, (0, config.AUDIO_LENGTH - waveform.shape[1]))
-    #         else:
-    #             waveform = waveform[:, :config.AUDIO_LENGTH]
-
-    #         mel_spec = self.mel_transform(waveform)
-    #         mel_spec = mel_spec.repeat(3, 1, 1)
-
-    #         if os.path.exists(temp_wav): os.remove(temp_wav)
-    #         return waveform.squeeze(0).numpy(), mel_spec.numpy()
-
-    #     except Exception as e:
-    #         if temp_wav and os.path.exists(temp_wav): os.remove(temp_wav)
-    #         return self._get_silent_audio()
     def _extract_audio(self, video_path):
         """Extracts audio directly to memory (No Disk I/O)"""
         try:
@@ -186,58 +156,6 @@ class InferencePreprocessor:
         silent_mel = np.zeros((3, config.N_MELS, n_time_steps), dtype=np.float32)
         return silent_wave, silent_mel
 
-    # def _sample_frames(self, video_path):
-    #     cap = cv2.VideoCapture(video_path)
-    #     if not cap.isOpened():
-    #         print(f"Error opening video: {video_path}")
-    #         return np.zeros((config.NUM_FRAMES, config.FRAME_SIZE[0], config.FRAME_SIZE[1], 3), dtype=np.uint8)
-
-    #     # Get metadata
-    #     fps = cap.get(cv2.CAP_PROP_FPS)
-    #     total_frames_in_video = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    #     if fps <= 0: fps = 25.0
-        
-    #     # Determine which frame indices we need
-    #     duration = total_frames_in_video / fps
-    #     timestamps = np.linspace(0, max(0, duration - 0.5), config.NUM_FRAMES)
-    #     target_indices = [int(t * fps) for t in timestamps]
-        
-    #     # Optimize: Sort and remove duplicates to read in order
-    #     target_indices = sorted(list(set(target_indices)))
-        
-    #     frames = []
-    #     current_idx = 0
-        
-    #     # --- SEQUENTIAL READ (No Seeking Errors) ---
-    #     while True:
-    #         ret, frame = cap.read()
-    #         if not ret: 
-    #             break # End of video
-            
-    #         # If this is a frame we want, keep it
-    #         if current_idx in target_indices:
-    #             frame = cv2.resize(frame, (config.FRAME_SIZE[1], config.FRAME_SIZE[0]))
-    #             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    #             frames.append(frame)
-            
-    #         current_idx += 1
-            
-    #         # Optimization: Stop reading if we passed the last frame we need
-    #         if target_indices and current_idx > target_indices[-1]:
-    #             break
-
-    #     cap.release()
-
-    #     # Handle edge cases (padding)
-    #     if len(frames) == 0:
-    #          return np.zeros((config.NUM_FRAMES, config.FRAME_SIZE[0], config.FRAME_SIZE[1], 3), dtype=np.uint8)
-
-    #     # If we missed some frames (due to rounding or bad metadata), duplicate the last one
-    #     while len(frames) < config.NUM_FRAMES:
-    #         frames.append(frames[-1])
-            
-    #     # If we got too many (due to duplicate indices logic), trim
-    #     return np.array(frames[:config.NUM_FRAMES], dtype=np.uint8)
     def _sample_frames(self, video_path):
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
@@ -394,3 +312,246 @@ class InferencePreprocessor:
             ld, rd = abs(points[l][0] - cx), abs(points[r][0] - cx)
             scores.append(1.0 - abs(ld - rd)/(ld + rd + 1e-6))
         return np.mean(scores)
+
+
+class InferencePreprocessorMMPDA:
+    def __init__(self, model_asset_path="face_landmarker.task"):
+        """
+        Args:
+            model_asset_path: Path to the downloaded MediaPipe .task file
+        """
+        self.model_asset_path = model_asset_path
+        self.landmarker = None
+        
+        # Audio Transforms
+        self.mel_transform = torchaudio.transforms.MelSpectrogram(
+            sample_rate=config.SAMPLE_RATE,
+            n_mels=config.N_MELS,
+            n_fft=1024, # Matches training code
+            win_length=400,
+            hop_length=160
+        )
+
+    def _init_mediapipe(self):
+        """Initialize MediaPipe FaceLandmarker (New API)"""
+        if self.landmarker is None:
+            base_options = mp.tasks.BaseOptions(model_asset_path=self.model_asset_path)
+            options = mp.tasks.vision.FaceLandmarkerOptions(
+                base_options=base_options,
+                output_face_blendshapes=True, # training features
+                output_facial_transformation_matrixes=True, # for pose
+                running_mode= mp.tasks.vision.RunningMode.IMAGE,
+                num_faces=1,
+                min_face_detection_confidence=0.5
+            )
+            self.landmarker = mp.tasks.vision.FaceLandmarker.create_from_options(options)
+
+    def process_video(self, video_path):
+        """
+        Main entry point: Converts video -> Dictionary of Tensors
+        """
+        self._init_mediapipe()
+
+        if not os.path.exists(video_path):
+            raise FileNotFoundError(f"Video not found: {video_path}")
+
+        # 1. Sample Frames
+        raw_frames_np = self._sample_frames(video_path) 
+        
+        # 2. Extract Features AND Crops
+        behavioral_np, face_crops_np = self._extract_features_and_crops(raw_frames_np)
+
+        # 3. Extract Audio
+        audio_wave_np, audio_mel_np = self._extract_audio(video_path)
+
+        # 4. Prepare Tensors
+        # Vision Face: (B, C, T, H, W)
+        vision_face = torch.from_numpy(face_crops_np).permute(3, 0, 1, 2).float()
+        # Assuming training normalized inputs [-1, 1] or [0, 1]. 
+        vision_face = vision_face / 255.0 
+
+        vision_behaviour = torch.from_numpy(behavioral_np).float()
+        
+        audio_wave = torch.from_numpy(audio_wave_np).float()
+        audio_mel = torch.from_numpy(audio_mel_np).float()
+
+        # Add Batch Dimension (B=1)
+        return {
+            'vision_behaviour': vision_behaviour.unsqueeze(0),
+            'vision_face': vision_face.unsqueeze(0),
+            'audio_mel': audio_mel.unsqueeze(0),
+            'audio_wave': audio_wave.unsqueeze(0)
+        }
+
+    def _extract_features_and_crops(self, frames):
+        """
+        extract blendshape features and face crops.
+        """
+        final_features = []
+        final_crops = []
+
+        for frame in frames:
+            # MediaPipe expects RGB
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame)
+            detection = self.landmarker.detect(mp_image)
+            
+            # Default empty features
+            feat_vec = np.zeros(50, dtype=np.float32)
+            # Default crop is the resized full frame (fallback)
+            face_crop = cv2.resize(frame, (config.FRAME_SIZE[1], config.FRAME_SIZE[0]))
+            
+            if detection.face_landmarks:
+                # 1. Extract Vector Features (Blendshapes)
+                feat_vec = self._get_mediapipe_features_logic(
+                    detection.face_blendshapes[0], 
+                    detection.facial_transformation_matrixes[0]
+                )
+                
+                # 2. Extract Face Crop
+                landmarks = detection.face_landmarks[0]
+                h, w = frame.shape[:2]
+                x_c = [lm.x for lm in landmarks]
+                y_c = [lm.y for lm in landmarks]
+                x_min, x_max = min(x_c) * w, max(x_c) * w
+                y_min, y_max = min(y_c) * h, max(y_c) * h
+                
+                # Apply 20% margin
+                margin_x, margin_y = (x_max - x_min) * 0.2, (y_max - y_min) * 0.2
+                x1, y1 = max(0, int(x_min - margin_x)), max(0, int(y_min - margin_y))
+                x2, y2 = min(w, int(x_max + margin_x)), min(h, int(y_max + margin_y))
+                
+                crop = frame[y1:y2, x1:x2]
+                if crop.size != 0:
+                    face_crop = cv2.resize(crop, (config.FRAME_SIZE[1], config.FRAME_SIZE[0]))
+
+            final_features.append(feat_vec)
+            final_crops.append(face_crop)
+            
+        return np.array(final_features, dtype=np.float32), np.array(final_crops, dtype=np.uint8)
+
+    def _get_mediapipe_features_logic(self, blendshapes, matrix):
+        """
+        Maps MP output to the 50-dim feature vector.
+        """
+        bs = {b.category_name: b.score for b in blendshapes}
+        au = np.zeros(35, dtype=np.float32)
+        
+        # Action Units Mapping
+        au[0] = bs.get('browInnerUp', 0)
+        au[1] = (bs.get('browOuterUpLeft', 0) + bs.get('browOuterUpRight', 0)) / 2
+        au[2] = (bs.get('browDownLeft', 0) + bs.get('browDownRight', 0)) / 2
+        au[3] = (bs.get('eyeWideLeft', 0) + bs.get('eyeWideRight', 0)) / 2
+        au[4] = (bs.get('cheekSquintLeft', 0) + bs.get('cheekSquintRight', 0)) / 2
+        au[5] = (bs.get('eyeSquintLeft', 0) + bs.get('eyeSquintRight', 0)) / 2
+        au[6] = (bs.get('noseSneerLeft', 0) + bs.get('noseSneerRight', 0)) / 2
+        au[7] = (bs.get('mouthUpperUpLeft', 0) + bs.get('mouthUpperUpRight', 0)) / 2
+        au[8] = (bs.get('mouthSmileLeft', 0) + bs.get('mouthSmileRight', 0)) / 2
+        au[9] = (bs.get('mouthDimpleLeft', 0) + bs.get('mouthDimpleRight', 0)) / 2
+        au[10] = (bs.get('mouthFrownLeft', 0) + bs.get('mouthFrownRight', 0)) / 2
+        au[11] = bs.get('mouthShrugLower', 0)
+        au[12] = bs.get('mouthPucker', 0)
+        au[13] = (bs.get('mouthStretchLeft', 0) + bs.get('mouthStretchRight', 0)) / 2
+        au[14] = bs.get('jawOpen', 0)
+        au[15] = bs.get('mouthClose', 0)
+        au[16] = (bs.get('eyeBlinkLeft', 0) + bs.get('eyeBlinkRight', 0)) / 2
+        
+        extras = ['mouthFunnel', 'mouthPressLeft', 'mouthPressRight', 'mouthRollUpper', 
+                  'mouthRollLower', 'mouthShrugUpper', 'jawLeft', 'jawRight', 'jawForward',
+                  'cheekPuff', 'mouthLowerDownLeft', 'mouthLowerDownRight']
+        for i, name in enumerate(extras):
+            if 17 + i < 35: au[17 + i] = bs.get(name, 0)
+
+        # Pose
+        m = np.array(matrix)
+        if m.shape == (4, 4): m = m.flatten()
+        sy = math.sqrt(m[0] * m[0] + m[4] * m[4])
+        if sy > 1e-6:
+            pitch = math.atan2(m[9], m[10])
+            yaw = math.atan2(-m[8], sy)
+            roll = math.atan2(m[4], m[0])
+        else:
+            pitch = math.atan2(-m[6], m[5])
+            yaw = math.atan2(-m[8], sy)
+            roll = 0
+
+        # Gaze
+        l_dx = bs.get('eyeLookInLeft', 0) - bs.get('eyeLookOutLeft', 0)
+        l_dy = bs.get('eyeLookUpLeft', 0) - bs.get('eyeLookDownLeft', 0)
+        r_dx = bs.get('eyeLookOutRight', 0) - bs.get('eyeLookInRight', 0)
+        r_dy = bs.get('eyeLookUpRight', 0) - bs.get('eyeLookDownRight', 0)
+        gaze = np.array([pitch, yaw, roll, l_dx, l_dy, r_dx, r_dy, abs(l_dx - r_dx)], dtype=np.float32)
+
+        # Emotions
+        happy = bs.get('mouthSmileLeft', 0) * 0.5 + bs.get('mouthSmileRight', 0) * 0.5
+        sad = (bs.get('mouthFrownLeft', 0) + bs.get('browDownLeft', 0)) / 2.0
+        surprise = (bs.get('browInnerUp', 0) + bs.get('jawOpen', 0)) / 2.0
+        fear = (bs.get('mouthStretchLeft', 0) + bs.get('browInnerUp', 0)) / 2.0
+        anger = (bs.get('browDownLeft', 0) + bs.get('jawForward', 0)) / 2.0
+        emotions = np.array([happy, sad, surprise, fear, anger], dtype=np.float32)
+
+        val = happy - max(sad, anger, fear)
+        arousal = max(happy, surprise, anger, fear)
+        va = np.array([val, arousal], dtype=np.float32)
+
+        return np.concatenate([au, gaze, emotions, va])
+
+    def _extract_audio(self, video_path):
+        """Extracts audio directly to memory"""
+        try:
+            cmd = [
+                'ffmpeg', '-i', video_path, '-vn', '-f', 'wav',
+                '-acodec', 'pcm_s16le', '-ar', str(config.SAMPLE_RATE), 
+                '-ac', '1', '-loglevel', 'error', 'pipe:1'
+            ]
+            process = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+            memory_file = io.BytesIO(process.stdout)
+            waveform, sr = torchaudio.load(memory_file)
+
+            if waveform.shape[1] == 0: raise ValueError("Empty audio")
+
+            if waveform.shape[1] < config.AUDIO_LENGTH:
+                waveform = torch.nn.functional.pad(waveform, (0, config.AUDIO_LENGTH - waveform.shape[1]))
+            else:
+                waveform = waveform[:, :config.AUDIO_LENGTH]
+
+            mel_spec = self.mel_transform(waveform)
+            mel_spec = mel_spec.repeat(3, 1, 1)
+
+            return waveform.squeeze(0).numpy(), mel_spec.numpy()
+        except Exception as e:
+            return self._get_silent_audio()
+
+    def _get_silent_audio(self):
+        silent_wave = np.zeros(config.AUDIO_LENGTH, dtype=np.float32)
+        n_time_steps = (config.AUDIO_LENGTH // 160) + 1
+        silent_mel = np.zeros((3, config.N_MELS, n_time_steps), dtype=np.float32)
+        return silent_wave, silent_mel
+
+    def _sample_frames(self, video_path):
+        """ frame sampling"""
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            return np.zeros((config.NUM_FRAMES, config.FRAME_SIZE[0], config.FRAME_SIZE[1], 3), dtype=np.uint8)
+
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        frames = []
+        if total_frames > 0:
+            indices = np.linspace(0, total_frames - 1, config.NUM_FRAMES).astype(int)
+            last_valid = None
+            for idx in indices:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, int(idx))
+                ret, frame = cap.read()
+                if ret and frame is not None and frame.size > 0:
+                    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    frames.append(frame)
+                    last_valid = frame.copy()
+                elif last_valid is not None:
+                    frames.append(last_valid.copy())
+        cap.release()
+        
+        if len(frames) > 0:
+            while len(frames) < config.NUM_FRAMES:
+                frames.append(frames[-1].copy())
+            return np.array(frames[:config.NUM_FRAMES], dtype=np.uint8)
+            
+        return np.zeros((config.NUM_FRAMES, config.FRAME_SIZE[0], config.FRAME_SIZE[1], 3), dtype=np.uint8)

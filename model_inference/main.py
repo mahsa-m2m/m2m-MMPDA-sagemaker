@@ -10,11 +10,10 @@ parent_dir = os.path.dirname(current_dir)
 sys.path.append(parent_dir)
 
 import config
-from preprocessing import InferencePreprocessor
+from preprocessing import InferencePreprocessor, InferencePreprocessorMMPDA
 
 try:
-    from models_comp.fusion_model import MinimalFusionModule
-    # from models_comp.fusion_model import FusionModule
+    from models_comp.fusion_model import MinimalFusionModule, FusionModule, FusionModuleSilent
 except ImportError as e:
     print(f"❌ Import Error: {e}")
     raise
@@ -59,10 +58,21 @@ def collate_fn_filter_errors(batch):
     return torch.utils.data.dataloader.default_collate(batch)
 
 
-class FusionInferenceService:
-    def __init__(self):
+class FusionInference:
+    def __init__(self, feature_type='mmpda'):
         print(f"🚀 Initializing Fusion Service on {config.DEVICE}...")
-        self.preprocessor = InferencePreprocessor()
+        self.feature_type = feature_type
+
+        # self.preprocessor = InferencePreprocessor()
+        if self.feature_type == 'mmpda':
+            # 1. MMPDA
+            self.preprocessor = InferencePreprocessorMMPDA(model_asset_path="face_landmarker.task")
+        elif self.feature_type == 'mp':
+            # 2. MediaPipeUse
+            self.preprocessor = InferencePreprocessor()
+        else:
+            raise ValueError("feature_type must be 'mmpda' or 'mp'")
+
 
         if not hasattr(config.MODEL_ARGS, 'device'):
             config.MODEL_ARGS.device = config.DEVICE
@@ -71,7 +81,8 @@ class FusionInferenceService:
         if not hasattr(config.MODEL_ARGS, 'attn_mask'):
             config.MODEL_ARGS.attn_mask = None
         
-        self.model = MinimalFusionModule(config.MODEL_ARGS)
+        self.model = FusionModuleSilent(config.MODEL_ARGS)
+        # self.model = MinimalFusionModule(config.MODEL_ARGS)
         # self.model = FusionModule(config.MODEL_ARGS)
         
         try:
@@ -88,10 +99,6 @@ class FusionInferenceService:
 
         self.model.to(config.DEVICE)
         self.model.eval()
-
-    # def predict_single(self, video_path):
-    #     """ single video"""
-    #     pass
 
     def predict_batch(self, video_paths, batch_size=8, num_workers=4):
         """
@@ -136,7 +143,7 @@ class FusionInferenceService:
                 current_batch_len = len(paths)
                 paths = batch_data['video_path']
 
-                if config.DEVICE == 'cuda': torch.cuda.synchronize()
+                # if config.DEVICE == 'cuda': torch.cuda.synchronize()
                 # t_gpu_start = time.perf_counter()
 
                 # 2. Batch Inference (GPU processes N videos at once)
@@ -147,7 +154,7 @@ class FusionInferenceService:
                     audio_wave=audio_wave
                 )
 
-                if config.DEVICE == 'cuda': torch.cuda.synchronize()
+                # if config.DEVICE == 'cuda': torch.cuda.synchronize()
                 # t_gpu_end = time.perf_counter()
 
                 # # Calculate GPU time per video
@@ -182,14 +189,77 @@ class FusionInferenceService:
 
         return results
 
+    def predict_batch_silent(self, video_paths, batch_size=8, num_workers=4):
+        """
+        Using only Vision + Face features
+        (Silent Mode: Audio is ignored).
+        """
+        # get the visual features
+        dataset = VideoInferenceDataset(video_paths, self.preprocessor)
+
+        if config.DEVICE == 'cuda':
+            torch.cuda.synchronize()
+        
+        loader = DataLoader(
+            dataset, 
+            batch_size=batch_size, 
+            shuffle=False, 
+            num_workers=num_workers,
+            collate_fn=collate_fn_filter_errors
+        )
+
+        results = []
+        print(f"🔄 Processing {len(video_paths)} videos (Silent Mode)...")
+
+        with torch.no_grad():
+            for batch_idx, batch_data in enumerate(loader):
+                if batch_data is None: continue # Skip empty batches
+                
+                # 1. Load Visual and Face features
+                vision_behaviour = batch_data['vision_behaviour'].to(config.DEVICE)
+                vision_face = batch_data['vision_face'].to(config.DEVICE)
+                paths = batch_data['video_path']
+
+                # 2. Forward pass
+                outputs = self.model(
+                    vision_behaviour, 
+                    vision_face, 
+                    audio_mel=None, 
+                    audio_wave=None
+                )
+
+                # Handle model return type
+                if isinstance(outputs, tuple) or isinstance(outputs, list):
+                    fused_logit = outputs[0]
+                else:
+                    fused_logit = outputs
+
+                # 3. Calculate Probabilities
+                probs = F.softmax(fused_logit, dim=1).cpu().numpy()
+
+                # 4. Format Results
+                for i, path in enumerate(paths):
+                    p_list = probs[i].tolist()
+                    
+                    results.append({
+                        "video_path": path,
+                        "truthful_prob": p_list[0],
+                        "deceptive_prob": p_list[1],
+                        "predicted_label": "Deceptive" if p_list[1] > p_list[0] else "Truthful"
+                    })
+
+        return results
+
 if __name__ == "__main__":
-    service = FusionInferenceService()
+    service = FusionInference(feature_type='mmpda')
     
     # Example: List of 100 videos
-    video_list = ["/home/sagemaker-user/mahsa-m2m-MMPDA-sagemaker/sample/TTTT_432_class_Deceptive_42.mkv"]#, "/home/sagemaker-user/mahsa-m2m-MMPDA-sagemaker/sample/TTTT_432_class_Deceptive_42.mkv"] 
+    video_list = ["/home/sagemaker-user/mahsa-m2m-MMPDA-sagemaker/sample/val/deceptive/W_72_class_Deceptive_110.mp4", "/home/sagemaker-user/mahsa-m2m-MMPDA-sagemaker/sample/TTTT_432_class_Deceptive_42.mkv"] 
     
     # Run in batch mode
-    batch_results = service.predict_batch(video_list, batch_size=4, num_workers=4)
+    # batch_results = service.predict_batch(video_list, batch_size=4, num_workers=4)
+    batch_results = service.predict_batch_silent(video_list, batch_size=4, num_workers=4)
+
     print(f"Processed {len(batch_results)} videos.")
 
     # Print formatted results
