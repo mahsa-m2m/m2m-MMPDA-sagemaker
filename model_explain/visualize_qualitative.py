@@ -11,11 +11,11 @@ parent_dir = os.path.dirname(current_dir)
 sys.path.append(parent_dir)
 
 import config
-from preprocessing import InferencePreprocessor
+from preprocessing import InferencePreprocessor, InferencePreprocessorMMPDA
 
 # Import the model
 try:
-    from models_comp.fusion_model import FusionModule, MinimalFusionModule
+    from models_comp.fusion_model import FusionModule, MinimalFusionModule, FusionModuleSilent
 except ImportError as e:
     print(f"❌ Import Error: {e}")
     raise
@@ -23,17 +23,28 @@ except ImportError as e:
 from explainer import MultimodalExplainer
 
 class FusionVisualizer:
-    def __init__(self):
+    def __init__(self, feature_type='mmpda'):
         print(f"🚀 Initializing Fusion Visualizer on {config.DEVICE}...")
-        self.preprocessor = InferencePreprocessor()
+        # self.preprocessor = InferencePreprocessor()
+        self.feature_type = feature_type
 
-        # --- 1. Load Model (Same logic as main.py) ---
+        if self.feature_type == 'mmpda':
+            # 1. MMPDA
+            self.preprocessor = InferencePreprocessorMMPDA(model_asset_path="face_landmarker.task")
+        elif self.feature_type == 'mp':
+            # 2. MediaPipeUse
+            self.preprocessor = InferencePreprocessor()
+        else:
+            raise ValueError("feature_type must be 'mmpda' or 'mp'")
+
+        # --- 1. Load Model ---
         if not hasattr(config.MODEL_ARGS, 'device'):
             config.MODEL_ARGS.device = config.DEVICE
         if not hasattr(config.MODEL_ARGS, 'attn_mask'):
             config.MODEL_ARGS.attn_mask = None
         
-        self.model = MinimalFusionModule(config.MODEL_ARGS)
+        self.model = FusionModuleSilent(config.MODEL_ARGS)
+        # self.model = MinimalFusionModule(config.MODEL_ARGS)
         # self.model = FusionModule(config.MODEL_ARGS)
         
         try:
@@ -59,7 +70,7 @@ class FusionVisualizer:
         self.model.eval()
         
         # --- 2. Initialize Explainer ---
-        self.explainer = MultimodalExplainer(self.model, target_layer_name='features')
+        self.explainer = MultimodalExplainer(self.model, target_layer_name='face_model.features.7')
         # self.explainer = MultimodalExplainer(self.model, target_layer_name='layer4')
 
     def get_raw_video_frames(self, video_path):
@@ -137,6 +148,40 @@ class FusionVisualizer:
 
         # 3. Generate Video
         self.create_video(video_path, face_cams, beh_saliency, feature_names, output_filename, pred_label)
+
+    def visualize_single_video_MMPDA(self, video_path, output_filename='heatmap_output.avi'):
+            print(f"🔍 Analyzing: {os.path.basename(video_path)}")
+            
+            # 1. Preprocess 
+            try:
+                data = self.preprocessor.process_video(video_path)
+                vision_behaviour = data['vision_behaviour'].to(config.DEVICE)
+                vision_face = data['vision_face'].to(config.DEVICE)
+                audio_mel = None
+                audio_wave = None
+                
+                # Dimension fixes
+                if vision_face.dim() == 4: vision_face = vision_face.unsqueeze(0)
+                if vision_behaviour.dim() == 2: vision_behaviour = vision_behaviour.unsqueeze(0)
+                # if audio_mel.dim() == 3: audio_mel = audio_mel.unsqueeze(0)
+                # if audio_wave.dim() == 1: audio_wave = audio_wave.unsqueeze(0)
+
+            except Exception as e:
+                print(f"❌ Preprocessing failed for {video_path}: {e}")
+                return
+
+            # 2. Run Explainer
+            inputs = (vision_behaviour, vision_face, None, None)
+            face_cams, beh_saliency, pred_idx = self.explainer.explain_MMPDA(inputs, use_relu=False)
+            
+            # Label Fix
+            pred_label = "Truthful" if pred_idx == 0 else "Deceptive"
+            print(f"   Model Prediction: {pred_label}")
+
+            # 3. Generate Video
+            # self.create_video(video_path, face_cams, beh_saliency, feature_names, output_filename, pred_label)
+            self.create_video_from_tensor(vision_face, face_cams, output_filename, pred_label)
+
 
     def create_video(self, video_path, face_cams, beh_saliency, feature_names, save_path, label):
         """
@@ -250,14 +295,105 @@ class FusionVisualizer:
         out.release()
         print(f"\n✅ Saved explanation to: {save_path}")
 
+    def create_video_from_tensor(self, vision_face_tensor, face_cams, save_path, label):
+        """
+        Generates video using the cropped face tensor as the background.
+        Handles shape mismatches robustly.
+        """
+        # --- 1. Heatmap Shape ---        
+        print(f"   DEBUG: Raw Heatmap Shape: {face_cams.shape}")
+
+        if face_cams.ndim == 4 and face_cams.shape[1] == 1:
+             face_cams = face_cams.squeeze(1) 
+        
+        elif face_cams.ndim == 4 and face_cams.shape[0] == 1:
+             face_cams = face_cams.squeeze(0)
+
+        # Final check
+        if face_cams.ndim != 3:
+            raise ValueError(f"Unexpected heatmap shape after squeezing: {face_cams.shape}. Expected (Time, H, W).")
+
+        T_model = face_cams.shape[0]
+
+        # --- 2. Prepare Background Frames ---        
+        if vision_face_tensor.ndim == 5:
+            video_tensor = vision_face_tensor.squeeze(0) # Remove Batch -> [3, T, H, W]
+        else:
+            video_tensor = vision_face_tensor
+
+        # Permute
+        video_tensor = video_tensor.permute(1, 2, 3, 0)
+        
+        # Detach and convert
+        video_frames = video_tensor.cpu().detach().numpy()
+
+        # Convert to uint8 (0-255)
+        if video_frames.max() <= 2.0: 
+            video_frames = (video_frames * 255).astype(np.uint8)
+        else:
+            video_frames = video_frames.astype(np.uint8)
+
+        # Get Dimensions
+        T_video, H, W, C = video_frames.shape
+        
+        print(f"   🎬 Generating Video: {T_video} frames @ {W}x{H}")
+
+        # --- 3. Write Video ---
+        fourcc = cv2.VideoWriter_fourcc(*'XVID') 
+        out = cv2.VideoWriter(save_path, fourcc, 25.0, (W, H))
+        
+        for t in range(T_video):
+            # RGB to BGR for OpenCV
+            frame = cv2.cvtColor(video_frames[t], cv2.COLOR_RGB2BGR)
+
+            # Time Interpolation
+            progress = t / T_video
+            t_mod = int(progress * T_model)
+            t_mod = min(t_mod, T_model - 1)
+            
+            # Overlay Heatmap
+            if t_mod < T_model:
+                cam_small = face_cams[t_mod]
+                
+                # Normalize per frame (Dynamic Range)
+                c_min, c_max = cam_small.min(), cam_small.max()
+                
+                # Avoid division by zero for flat heatmaps
+                if c_max - c_min > 1e-9:
+                    cam_norm = (cam_small - c_min) / (c_max - c_min)
+                else:
+                    cam_norm = cam_small 
+
+                # Resize 7x7 heatmap to 160x160 (or tensor size)
+                cam = cv2.resize(cam_norm, (W, H), interpolation=cv2.INTER_CUBIC)
+                
+                # Colorize
+                heatmap = np.uint8(255 * cam)
+                heatmap_colored = cv2.applyColorMap(heatmap, cv2.COLORMAP_JET)
+                
+                # Blend (60% Original, 40% Heatmap)
+                frame = cv2.addWeighted(frame, 0.6, heatmap_colored, 0.4, 0)
+
+            # Add Label Text
+            cv2.putText(frame, label, (5, 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+
+            out.write(frame)
+
+        out.release()
+        print(f"✅ Saved cropped heatmap video to: {save_path}")
+
 if __name__ == "__main__":
     # 1. Initialize
-    visualizer = FusionVisualizer()
+    feature_type = 'mmpda'
+    visualizer = FusionVisualizer(feature_type=feature_type)
     
     # 2. A video to test
-    test_video = "sample/train/truthful/TTTT_921_class_Truth_19.mp4"
+    test_video = "sample/val/deceptive/TTTT_116_class_Deceptive_38.mp4"
     
     if os.path.exists(test_video):
-        visualizer.visualize_single_video(test_video, output_filename="explainability_result.avi")
+        if feature_type == 'mmpda':
+            visualizer.visualize_single_video_MMPDA(test_video, output_filename="explainability_result.avi")
+        else:
+            visualizer.visualize_single_video(test_video, output_filename="explainability_result.avi")
     else:
         print(f"Video not found: {test_video}")

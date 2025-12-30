@@ -40,9 +40,27 @@ python model_inference/main.py
 ### 🔎🧠 5. Explainability
 Generate and save heatmaps on the video frames to show what features the model has learned.
 
-Set the video path in => `visualize_qualitative.py`
+Set the below configs in => `visualize_qualitative.py`
 
-Set the model path and config in => `explainer.py`
+- The video path
+- Model architecture:
+    ```
+    self.model = FusionModuleSilent(config.MODEL_ARGS)
+    # self.model = MinimalFusionModule(config.MODEL_ARGS)
+    # self.model = FusionModule(config.MODEL_ARGS)
+    ```
+- Target layer: 
+    ```
+    self.explainer = MultimodalExplainer(self.model, target_layer_name='face_model.features.7')
+    ```
+- The feature type:
+    ```
+    feature_type='mmpda' or feature_type='mp'
+    ```
+
+The model path and config in => `explainer.py`
+
+Then run it using:
 ```
 python model_explain/visualize_qualitative.py
 ```

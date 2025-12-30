@@ -127,3 +127,60 @@ class MultimodalExplainer:
         beh_saliency = beh_saliency.cpu().numpy()
 
         return face_cam, beh_saliency, target_class_idx
+
+    # explainer.py (Update the explain method)
+
+    def explain_MMPDA(self, inputs, target_class_idx=None, use_relu=True):
+        v_beh, v_face, a_mel, a_wave = inputs
+        
+        # ... (Previous init code same as before) ...
+        self.activations = []
+        self.gradients = []
+
+        if not v_beh.requires_grad: v_beh.requires_grad = True
+        
+        # Forward & Backward
+        self.model.zero_grad()
+        with torch.set_grad_enabled(True):
+            outputs = self.model(v_beh, v_face, a_mel, a_wave)
+            logits = outputs[0]
+            if target_class_idx is None:
+                target_class_idx = torch.argmax(logits, dim=1).item()
+            score = logits[0, target_class_idx]
+            score.backward()
+
+        # 1. Stack list into tensor
+        if isinstance(self.activations, list):
+            fmaps = torch.cat(self.activations, dim=0) # [T, 512, 5, 5]
+        else:
+            fmaps = self.activations
+        if isinstance(self.gradients, list):
+            grads = torch.cat(self.gradients, dim=0)
+        else:
+            grads = self.gradients
+
+        # 2. Compute Grad-CAM
+        weights = torch.mean(grads, dim=(2, 3), keepdim=True)
+        cam = torch.sum(weights * fmaps, dim=1, keepdim=True)
+        
+        # --- DIAGNOSTIC PRINT ---
+        print(f"DEBUG: CAM Raw Range: {cam.min().item():.4f} to {cam.max().item():.4f}")
+        
+        if use_relu:
+            cam = F.relu(cam) # Standard Grad-CAM (Positive influence only)
+        else:
+            cam = torch.abs(cam) # Visualize ALL relevant areas (Positive & Negative)
+
+        # Normalize globally (optional, but helps keeping relative time importance)
+        cam = cam - cam.min()
+        cam = cam / (cam.max() + 1e-7)
+        
+        face_cam = cam.data.cpu().numpy() # (Time, 1, H, W)
+        
+        # ... (Behaviour saliency code same as before) ...
+        beh_grad = v_beh.grad.data
+        beh_saliency = torch.abs(beh_grad * v_beh.detach())
+        beh_saliency = beh_saliency / (beh_saliency.max() + 1e-7)
+        beh_saliency = beh_saliency.cpu().numpy()
+
+        return face_cam, beh_saliency, target_class_idx
