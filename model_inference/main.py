@@ -263,7 +263,6 @@ if __name__ == "__main__":
     print(f"Processed {len(batch_results)} videos.")
 
     # Print formatted results
-    # print(f"{'VIDEO NAME':<40} | {'LABEL':<10} | {'CPU(s)':<8} | {'GPU(s)':<8} | {'TOTAL(s)':<8}")
     print(f"{'VIDEO NAME':<40} | {'LABEL':<10} | {'DECEPTIVE SCORE':<8} | {'TRUTHFUL SCORE':<8}")
     print("-" * 90)
 

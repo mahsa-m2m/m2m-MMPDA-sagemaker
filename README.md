@@ -57,8 +57,9 @@ Set the below configs in => `visualize_qualitative.py`
     ```
     feature_type='mmpda' or feature_type='mp'
     ```
+    `mmpda` is the cropped face features (new improved features), `mp` is the basic features. 
 
-The model path and config in => `explainer.py`
+Set the model path and model parameters in => `config.py`
 
 Then run it using:
 ```

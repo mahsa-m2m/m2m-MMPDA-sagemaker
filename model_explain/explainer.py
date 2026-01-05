@@ -128,8 +128,6 @@ class MultimodalExplainer:
 
         return face_cam, beh_saliency, target_class_idx
 
-    # explainer.py (Update the explain method)
-
     def explain_MMPDA(self, inputs, target_class_idx=None, use_relu=True):
         v_beh, v_face, a_mel, a_wave = inputs
         
