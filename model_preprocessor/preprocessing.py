@@ -157,10 +157,10 @@ class InferencePreprocessorMMPDA:
             
             # 5. Add Batch Dimension (B=1) - Ready for model input
             return {
-                'vision_behaviour': vision_behaviour.unsqueeze(0),  # [1, N, 50]
-                'vision_face': vision_face.unsqueeze(0),            # [1, 3, N, H, W]
-                'audio_mel': audio_mel.unsqueeze(0),                # [1, 3, N_MELS, T]
-                'audio_wave': audio_wave.unsqueeze(0)               # [1, AUDIO_LENGTH]
+                'vision_behaviour': vision_behaviour, #.unsqueeze(0),  # [1, N, 50]
+                'vision_face': vision_face, #.unsqueeze(0),            # [1, 3, N, H, W]
+                'audio_mel': audio_mel, #.unsqueeze(0),                # [1, 3, N_MELS, T]
+                'audio_wave': audio_wave #.unsqueeze(0)               # [1, AUDIO_LENGTH]
             }
         except AudioExtractionError:
             raise
@@ -486,9 +486,6 @@ def lambda_handler(event, context):
 
     # 2. Filesystem Setup
     work_dir = os.path.join('/tmp', str(session_id), str(chunk_id))
-    # local_input_filename = "input_video.mp4"
-    # local_input_path = os.path.join(work_dir, local_input_filename)
-    # local_audio_path = os.path.join(work_dir, "audio.wav")
 
     # Clean up /tmp
     if os.path.exists(work_dir):
@@ -533,32 +530,18 @@ def lambda_handler(event, context):
         s3_tensor_uri = None
         
         try:
-            # # A. Handle Audio Output
-            # if should_extract_audio and results.get('audio_wave') is not None:
-            #     audio_data = results['audio_wave']
-            #     if isinstance(audio_data, torch.Tensor):
-            #         # audio_data = audio_data.cpu().numpy()
-            #         audio_data = audio_data.squeeze().cpu().numpy()
-            #     if audio_data.ndim > 1:
-            #          audio_data = audio_data.flatten()
-
-                # wavfile.write(local_audio_path, config.SAMPLE_RATE, audio_data)
-                
-                # s3_audio_uri = f"s3://deception-results/{session_id}/{file_type}/{chunk_id}/{local_audio_filename}"
-                # out_aud_bucket, out_aud_key = parse_s3_uri(s3_audio_uri)
-                # s3_client.upload_file(local_audio_path, out_aud_bucket, out_aud_key)
-
             vision_behaviour = results.get('vision_behaviour')
             vision_face = results.get('vision_face')
             audio_mel = results.get('audio_mel')
             audio_wave = results.get('audio_wave')
 
-            # B. Handle Video/Feature Output (Tensor)
+            # Training code saves: [N, 50], [3, N, H, W], [3, N_MELS, T], [AUDIO_LENGTH]
+            # process_video() returns: [1, N, 50], [1, 3, N, H, W], [1, 3, N_MELS, T], [1, AUDIO_LENGTH]
             tensor_output = {
-                'vision_behaviour': vision_behaviour.unsqueeze(0) if vision_behaviour is not None else None,
-                'vision_face': vision_face.unsqueeze(0) if vision_face is not None else None,
-                'audio_mel': audio_mel.unsqueeze(0) if audio_mel is not None else None,
-                'audio_wave': audio_wave.unsqueeze(0) if audio_wave is not None else None
+                'vision_behaviour': vision_behaviour.squeeze(0) if vision_behaviour is not None else None,  # [1, N, 50] -> [N, 50]
+                'vision_face': vision_face.squeeze(0) if vision_face is not None else None,                # [1, 3, N, H, W] -> [3, N, H, W]
+                'audio_mel': audio_mel.squeeze(0) if audio_mel is not None else None,                      # [1, 3, N_MELS, T] -> [3, N_MELS, T]
+                'audio_wave': audio_wave.squeeze(0) if audio_wave is not None else None                    # [1, AUDIO_LENGTH] -> [AUDIO_LENGTH]
             }
 
             buffer = io.BytesIO()
@@ -583,7 +566,6 @@ def lambda_handler(event, context):
             "fileType": file_type,
             "chunkId": chunk_id,
             "s3OutputTensors": s3_tensor_uri,
-            # "s3OutputAudio": s3_audio_uri,
             "status": "success",
             "metadata": results.get('metadata'),
             "error": None
@@ -623,6 +605,160 @@ def lambda_handler(event, context):
             "status": "failed",
             "error": f"Unexpected error: {str(e)}"
         }
+
+# def lambda_handler(event, context):
+#     """
+#     AWS Lambda Entry Point
+#     """
+#     # 1. Extract Inputs
+#     session_id = event.get('sessionId')
+#     chunk_id = event.get('chunkId')
+#     file_type = event.get('fileType', 'video')
+#     s3_input = event.get('s3Input')
+    
+#     # Optional parameters
+#     should_extract_audio = event.get("extractAudio", True)
+#     resize_dims = event.get("resize", None)
+
+#     # 2. Filesystem Setup
+#     work_dir = os.path.join('/tmp', str(session_id), str(chunk_id))
+#     # local_input_filename = "input_video.mp4"
+#     # local_input_path = os.path.join(work_dir, local_input_filename)
+#     # local_audio_path = os.path.join(work_dir, "audio.wav")
+
+#     # Clean up /tmp
+#     if os.path.exists(work_dir):
+#         shutil.rmtree(work_dir)
+#     os.makedirs(work_dir)
+
+#     try:
+#         # 3. Validation
+#         if not s3_input or not session_id:
+#             raise InvalidInputError("Missing required fields: s3Input or sessionId")
+
+#         input_bucket, input_key = parse_s3_uri(s3_input)
+
+#         local_input_filename = os.path.basename(input_key)
+#         local_input_path = os.path.join(work_dir, local_input_filename)
+#         local_audio_filename = f"{chunk_id}.wav"
+#         local_tensor_filename = f"{chunk_id}.pt"
+#         local_audio_path = os.path.join(work_dir, local_audio_filename)
+
+#         # 4. Download file from S3
+#         try:
+#             print(f"Downloading {s3_input}...")
+#             s3_client.download_file(input_bucket, input_key, local_input_path)
+#         except Exception as e:
+#             raise InvalidInputError(f"Failed to download input from S3: {str(e)}")
+
+#         # 5. Run the Process Logic
+#         try:
+#             print("Preprocessing video...")
+#             # Initialize Preprocessor
+#             target_size = (resize_dims['height'], resize_dims['width']) if resize_dims else config.FRAME_SIZE
+#             preprocessor = InferencePreprocessorMMPDA(target_size=target_size)
+            
+#             # Run preprocess
+#             results = preprocessor.process_video(local_input_path, extract_audio=should_extract_audio)
+#         except Exception as e:
+#             # Internal processing errors
+#             raise VideoPreprocessError(f"Processing failed: {str(e)}")
+
+#         # 6. Upload Results back to S3
+#         s3_audio_uri = None
+#         s3_tensor_uri = None
+        
+#         try:
+#             # # A. Handle Audio Output
+#             # if should_extract_audio and results.get('audio_wave') is not None:
+#             #     audio_data = results['audio_wave']
+#             #     if isinstance(audio_data, torch.Tensor):
+#             #         # audio_data = audio_data.cpu().numpy()
+#             #         audio_data = audio_data.squeeze().cpu().numpy()
+#             #     if audio_data.ndim > 1:
+#             #          audio_data = audio_data.flatten()
+
+#                 # wavfile.write(local_audio_path, config.SAMPLE_RATE, audio_data)
+                
+#                 # s3_audio_uri = f"s3://deception-results/{session_id}/{file_type}/{chunk_id}/{local_audio_filename}"
+#                 # out_aud_bucket, out_aud_key = parse_s3_uri(s3_audio_uri)
+#                 # s3_client.upload_file(local_audio_path, out_aud_bucket, out_aud_key)
+
+#             vision_behaviour = results.get('vision_behaviour')
+#             vision_face = results.get('vision_face')
+#             audio_mel = results.get('audio_mel')
+#             audio_wave = results.get('audio_wave')
+
+#             # B. Handle Video/Feature Output (Tensor)
+#             tensor_output = {
+#                 'vision_behaviour': vision_behaviour.unsqueeze(0) if vision_behaviour is not None else None,
+#                 'vision_face': vision_face.unsqueeze(0) if vision_face is not None else None,
+#                 'audio_mel': audio_mel.unsqueeze(0) if audio_mel is not None else None,
+#                 'audio_wave': audio_wave.unsqueeze(0) if audio_wave is not None else None
+#             }
+
+#             buffer = io.BytesIO()
+#             torch.save(tensor_output, buffer)
+#             buffer.seek(0)
+            
+#             s3_tensor_uri = f"s3://deception-detection-bucket/{session_id}/{file_type}/{chunk_id}/{local_tensor_filename}"
+#             out_tens_bucket, out_tens_key = parse_s3_uri(s3_tensor_uri)
+            
+#             # Serialize and Upload
+#             s3_client.upload_fileobj(buffer, out_tens_bucket, out_tens_key)
+
+#         except Exception as e:
+#             # Any S3 upload errors
+#             if isinstance(e, S3WriteError):
+#                 raise
+#             raise S3WriteError(f"Failed to upload results to S3: {str(e)}")
+
+#         # 7. Success Response
+#         return {
+#             "sessionId": session_id,
+#             "fileType": file_type,
+#             "chunkId": chunk_id,
+#             "s3OutputTensors": s3_tensor_uri,
+#             # "s3OutputAudio": s3_audio_uri,
+#             "status": "success",
+#             "metadata": results.get('metadata'),
+#             "error": None
+#         }
+
+#     # --- Exception Handling ---
+
+#     except (InvalidInputError, VideoPreprocessError) as e:
+#         # Input or Processing logic failed
+#         print(f"{type(e).__name__}: {e}")
+#         return {
+#             "sessionId": session_id,
+#             "fileType": file_type,
+#             "chunkId": chunk_id,
+#             "status": "failed",
+#             "error": str(e)
+#         }
+
+#     except S3WriteError as e:
+#         # S3 write failed
+#         print(f"S3WriteError: {e}")
+#         return {
+#             "sessionId": session_id,
+#             "fileType": file_type,
+#             "chunkId": chunk_id,
+#             "status": "failed",
+#             "error": str(e)
+#         }
+
+#     except Exception as e:
+#         # Unexpected errors
+#         print(f"Unexpected error: {e}")
+#         return {
+#             "sessionId": session_id,
+#             "fileType": file_type,
+#             "chunkId": chunk_id,
+#             "status": "failed",
+#             "error": f"Unexpected error: {str(e)}"
+#         }
 
 # ==========================================
 # TESTING - LOCAL

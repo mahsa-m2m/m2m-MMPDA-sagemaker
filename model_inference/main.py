@@ -10,7 +10,6 @@ parent_dir = os.path.dirname(current_dir)
 sys.path.append(parent_dir)
 
 import config
-from preprocessing import InferencePreprocessor, InferencePreprocessorMMPDA
 
 try:
     from models_comp.fusion_model import MinimalFusionModule, FusionModule, FusionModuleSilent
@@ -20,35 +19,58 @@ except ImportError as e:
 
 # --- HELPER DATASET FOR BATCHING ---
 class VideoInferenceDataset(Dataset):
-    def __init__(self, video_paths, preprocessor):
-        self.video_paths = video_paths
-        self.preprocessor = preprocessor
+    def __init__(self, feature_paths):
+        """
+        Args:
+            feature_paths: List of paths to .pt files containing pre-extracted features
+            {
+                'vision_behaviour': vision_behaviour.unsqueeze(0),  # [1, N, 50]
+                'vision_face': vision_face.unsqueeze(0),            # [1, 3, N, H, W]
+                'audio_mel': audio_mel.unsqueeze(0),                # [1, 3, N_MELS, T]
+                'audio_wave': audio_wave.unsqueeze(0)               # [1, AUDIO_LENGTH]
+            }
+        """
+        self.feature_paths = feature_paths
 
     def __len__(self):
-        return len(self.video_paths)
+        return len(self.feature_paths)
 
     def __getitem__(self, idx):
-        video_path = self.video_paths[idx]
-        try:
-            t_start_cpu = time.perf_counter()
-            # returns dict of tensors with dim 0 unsqueezed
-            data = self.preprocessor.process_video(video_path)
-            
-            for k, v in data.items():
-                data[k] = v.squeeze(0) 
-                
-            t_end_cpu = time.perf_counter()
-            cpu_duration = t_end_cpu - t_start_cpu
 
-            data['video_path'] = video_path # Pass path to track results
+        feature_path = self.feature_paths[idx]
+        try:
+
+            data = torch.load(feature_path, map_location=config.DEVICE)
+            # data = torch.load(feature_path, map_location=config.DEVICE)
+            # print(f"vision_face dtype: {data['vision_face'].dtype}")
+            # print(f"vision_face range: [{data['vision_face'].min()}, {data['vision_face'].max()}]")
+
+            for k, v in data.items():
+                if isinstance(v, torch.Tensor):
+                    data[k] = v.squeeze(0) 
+            
+            if 'vision_face' in data:
+                vision_face = data['vision_face']
+                
+                # 1. Convert from uint8 to float32 [0-1]
+                vision_face = vision_face.float() / 255.0
+                
+                # 2. Normalize
+                # Shape: [3, T, H, W]
+                mean = torch.tensor([0.485, 0.456, 0.406], device=config.DEVICE).view(3, 1, 1, 1)
+                std = torch.tensor([0.229, 0.224, 0.225], device=config.DEVICE).view(3, 1, 1, 1)
+                vision_face = (vision_face - mean) / std
+                
+                data['vision_face'] = vision_face
+
+            # Store feature path 
+            data['feature_path'] = feature_path
             data['valid'] = True
-            data['cpu_time'] = cpu_duration 
 
             return data
         except Exception as e:
-            print(f"Skipping {video_path}: {e}")
-            # Return a flag indicating failure (handled in collate_fn)
-            return {'valid': False, 'video_path': video_path}
+            print(f"Skipping {feature_path}: {e}")
+            return {'valid': False, 'feature_path': feature_path}
 
 def collate_fn_filter_errors(batch):
     """Custom collator to filter out videos that failed preprocessing"""
@@ -59,19 +81,18 @@ def collate_fn_filter_errors(batch):
 
 
 class FusionInference:
-    def __init__(self, feature_type='mmpda'):
+    def __init__(self):
         print(f"🚀 Initializing Fusion Service on {config.DEVICE}...")
-        self.feature_type = feature_type
 
-        # self.preprocessor = InferencePreprocessor()
-        if self.feature_type == 'mmpda':
-            # 1. MMPDA
-            self.preprocessor = InferencePreprocessorMMPDA(model_asset_path="face_landmarker.task")
-        elif self.feature_type == 'mp':
-            # 2. MediaPipeUse
-            self.preprocessor = InferencePreprocessor()
-        else:
-            raise ValueError("feature_type must be 'mmpda' or 'mp'")
+        # # self.preprocessor = InferencePreprocessor()
+        # if self.feature_type == 'mmpda':
+        #     # 1. MMPDA
+        #     self.preprocessor = InferencePreprocessorMMPDA(model_asset_path="face_landmarker.task")
+        # elif self.feature_type == 'mp':
+        #     # 2. MediaPipeUse
+        #     self.preprocessor = InferencePreprocessor()
+        # else:
+        #     raise ValueError("feature_type must be 'mmpda' or 'mp'")
 
 
         if not hasattr(config.MODEL_ARGS, 'device'):
@@ -100,15 +121,15 @@ class FusionInference:
         self.model.to(config.DEVICE)
         self.model.eval()
 
-    def predict_batch(self, video_paths, batch_size=8, num_workers=4):
+    def predict_batch(self, feature_paths, batch_size=8, num_workers=4):
         """
-        Scalable method for list of videos.
+        Scalable method for list of pre-extracted features.
         Args:
-            video_paths: List of file paths
-            batch_size: How many videos to push to GPU at once
-            num_workers: CPU cores for parallel preprocessing
+            feature_paths: List of .pt file paths containing pre-extracted features
+            batch_size: How many features to push to GPU at once
+            num_workers: CPU cores for parallel loading
         """
-        dataset = VideoInferenceDataset(video_paths, self.preprocessor)
+        dataset = VideoInferenceDataset(feature_paths)
         
         if config.DEVICE == 'cuda':
             torch.cuda.synchronize()
@@ -124,7 +145,7 @@ class FusionInference:
         )
 
         results = []
-        print(f"🔄 Processing {len(video_paths)} videos in batches of {batch_size}...")
+        print(f"🔄 Processing {len(feature_paths)} pre-extracted features in batches of {batch_size}...")
 
         # total_script_start = time.perf_counter()
 
@@ -133,7 +154,7 @@ class FusionInference:
                 if batch_data is None: continue # Skip empty batches
                 
                 # cpu_times = batch_data['cpu_time'].numpy().tolist() 
-                paths = batch_data['video_path']
+                paths = batch_data['feature_path']
 
                 # 1. Move Batch to GPU
                 vision_behaviour = batch_data['vision_behaviour'].to(config.DEVICE)
@@ -153,15 +174,6 @@ class FusionInference:
                     audio_mel=audio_mel,
                     audio_wave=audio_wave
                 )
-
-                # if config.DEVICE == 'cuda': torch.cuda.synchronize()
-                # t_gpu_end = time.perf_counter()
-
-                # # Calculate GPU time per video
-                # # We divide the total batch time by the number of videos in the batch
-                # total_batch_gpu_time = t_gpu_end - t_gpu_start
-                # avg_gpu_per_video = total_batch_gpu_time / current_batch_len
-                
                 
                 logits = outputs[0] # [Batch_Size, Num_Classes]
                 probs = F.softmax(logits, dim=1).cpu().numpy()
@@ -175,27 +187,23 @@ class FusionInference:
                     # video_total_time = video_cpu_time + avg_gpu_per_video
 
                     results.append({
-                        "video_path": path,
+                        "feature_path": path,
                         "truthful_prob": p_list[0],
                         "deceptive_prob": p_list[1],
                         "predicted_label": "Deceptive" if p_list[1] > p_list[0] else "Truthful"
-                        # # TIMING DATA
-                        # "time_cpu": video_cpu_time,
-                        # "time_gpu": avg_gpu_per_video,
-                        # "time_total": video_total_time
                     })
-        # total_script_end = time.perf_counter()
-        # print(f"🏁 Total Wall-Clock Time for all videos: {total_script_end - total_script_start:.2f}s")
 
         return results
 
-    def predict_batch_silent(self, video_paths, batch_size=8, num_workers=4):
+    def predict_batch_silent(self, feature_paths, batch_size=8, num_workers=4):
         """
         Using only Vision + Face features
         (Silent Mode: Audio is ignored).
+        Args:
+            feature_paths: List of .pt file paths containing pre-extracted features
         """
-        # get the visual features
-        dataset = VideoInferenceDataset(video_paths, self.preprocessor)
+        # Pass feature_paths
+        dataset = VideoInferenceDataset(feature_paths)
 
         if config.DEVICE == 'cuda':
             torch.cuda.synchronize()
@@ -209,16 +217,16 @@ class FusionInference:
         )
 
         results = []
-        print(f"🔄 Processing {len(video_paths)} videos (Silent Mode)...")
+        print(f"🔄 Processing {len(feature_paths)} pre-extracted features (Silent Mode)...")
 
         with torch.no_grad():
             for batch_idx, batch_data in enumerate(loader):
                 if batch_data is None: continue # Skip empty batches
-                
                 # 1. Load Visual and Face features
                 vision_behaviour = batch_data['vision_behaviour'].to(config.DEVICE)
                 vision_face = batch_data['vision_face'].to(config.DEVICE)
-                paths = batch_data['video_path']
+
+                paths = batch_data['feature_path']
 
                 # 2. Forward pass
                 outputs = self.model(
@@ -242,7 +250,7 @@ class FusionInference:
                     p_list = probs[i].tolist()
                     
                     results.append({
-                        "video_path": path,
+                        "feature_path": path,
                         "truthful_prob": p_list[0],
                         "deceptive_prob": p_list[1],
                         "predicted_label": "Deceptive" if p_list[1] > p_list[0] else "Truthful"
@@ -251,14 +259,13 @@ class FusionInference:
         return results
 
 if __name__ == "__main__":
-    service = FusionInference(feature_type='mmpda')
+    service = FusionInference()
     
-    # Example: List of 100 videos
-    video_list = ["/home/sagemaker-user/mahsa-m2m-MMPDA-sagemaker/sample/val/deceptive/W_72_class_Deceptive_110.mp4", "/home/sagemaker-user/mahsa-m2m-MMPDA-sagemaker/sample/TTTT_432_class_Deceptive_42.mkv"] 
+    # Example: List of 100 features.pt
+    feature_list = ["/home/sagemaker-user/mahsa-m2m-MMPDA-sagemaker/model_inference/TTTT_1006_class_Truth_33.pt"]
     
     # Run in batch mode
-    # batch_results = service.predict_batch(video_list, batch_size=4, num_workers=4)
-    batch_results = service.predict_batch_silent(video_list, batch_size=4, num_workers=4)
+    batch_results = service.predict_batch_silent(feature_list, batch_size=4, num_workers=4)
 
     print(f"Processed {len(batch_results)} videos.")
 
@@ -267,7 +274,7 @@ if __name__ == "__main__":
     print("-" * 90)
 
     for res in batch_results:
-        vid_name = os.path.basename(res['video_path'])
+        vid_name = os.path.basename(res['feature_path'])
 
         print(f"{vid_name:<40} | {res['predicted_label']:<10} | "
               f"{res['deceptive_prob']:.4f}          |  {res['truthful_prob']:.4f} ")
