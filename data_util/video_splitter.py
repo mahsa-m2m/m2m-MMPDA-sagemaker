@@ -85,6 +85,7 @@ def validate_video_streams(input_path):
         raise VideoChunkingError(f"Failed to probe video file - file may be corrupted: {os.path.basename(input_path)}")
     except json.JSONDecodeError:
         raise VideoChunkingError(f"Failed to parse video metadata - file is corrupted: {os.path.basename(input_path)}")
+
 def check_has_audio(input_path):
     cmd = [
         'ffprobe', '-v', 'error',

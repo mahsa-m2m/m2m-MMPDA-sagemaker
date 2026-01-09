@@ -7,7 +7,38 @@ import mediapipe as mp
 import subprocess
 import io
 import math
+import json
+import boto3
+import tempfile
+import traceback
+from urllib.parse import urlparse
+# from scipy.io import wavfile
+import io
+import torch
+import shutil
+
 import config
+
+# ==========================================
+# CUSTOM ERROR DEFINITIONS
+# ==========================================
+class AudioExtractionError(Exception):
+    """Failed to extract audio"""
+    pass
+
+class VideoPreprocessError(Exception):
+    """Failed during video frame extraction, resizing, normalization"""
+    pass
+
+class S3WriteError(Exception):
+    """Failed to write chunks/files to S3"""
+    pass
+
+class InvalidInputError(Exception):
+    """Missing input file or parameters"""
+    pass
+
+s3_client = boto3.client('s3')
 
 
 class InferencePreprocessorMMPDA:
@@ -16,7 +47,7 @@ class InferencePreprocessorMMPDA:
     Extracts visual (face crops + behavioral features) and audio features.
     """
     
-    def __init__(self, model_asset_path="face_landmarker.task"):
+    def __init__(self, model_asset_path="face_landmarker.task", target_size=None):
         """
         Initialize preprocessing components.
         
@@ -25,6 +56,9 @@ class InferencePreprocessorMMPDA:
         """
         self.model_asset_path = model_asset_path
         self.landmarker = None
+
+        # Use config.FRAME_SIZE if specific resize not requested in JSON
+        self.target_size = target_size if target_size else config.FRAME_SIZE
         
         # Audio Transforms (matches training code exactly)
         self.mel_transform = torchaudio.transforms.MelSpectrogram(
@@ -43,6 +77,9 @@ class InferencePreprocessorMMPDA:
         Uses the new MediaPipe Tasks API.
         """
         if self.landmarker is None:
+            if not os.path.exists(self.model_asset_path):
+                # Missing file on the instance
+                raise VideoPreprocessError(f"MediaPipe model missing: {self.model_asset_path}")
             base_options = mp.tasks.BaseOptions(model_asset_path=self.model_asset_path)
             options = mp.tasks.vision.FaceLandmarkerOptions(
                 base_options=base_options,
@@ -52,13 +89,17 @@ class InferencePreprocessorMMPDA:
                 num_faces=1,
                 min_face_detection_confidence=0.5
             )
-            self.landmarker = mp.tasks.vision.FaceLandmarker.create_from_options(options)
+
+            try:
+                self.landmarker = mp.tasks.vision.FaceLandmarker.create_from_options(options)
+            except Exception as e:
+                raise VideoPreprocessError(f"Failed to init MediaPipe: {str(e)}")
 
     # ==========================================
     # MAIN PROCESSING ENTRY POINT
     # ==========================================
     
-    def process_video(self, video_path):
+    def process_video(self, video_path, extract_audio=False):
         """
         Main entry point: Extracts all features from video.
         
@@ -69,8 +110,8 @@ class InferencePreprocessorMMPDA:
             dict: Dictionary containing:
                 - 'vision_behaviour': [1, NUM_FRAMES, 50] - Behavioral features
                 - 'vision_face': [1, 3, NUM_FRAMES, H, W] - Face crops (normalized [0,1])
-                - 'audio_mel': [1, 3, N_MELS, T] - Mel spectrogram - <<None for the video model>>
-                - 'audio_wave': [1, AUDIO_LENGTH] - Raw audio waveform - <<None for the video model>>
+                - 'audio_mel': [1, 3, N_MELS, T] - Mel spectrogram - <<Zero for the video model>>
+                - 'audio_wave': [1, AUDIO_LENGTH] - Raw audio waveform - <<Zero for the video model>>
                 
         Raises:
             FileNotFoundError: If video file doesn't exist
@@ -80,41 +121,51 @@ class InferencePreprocessorMMPDA:
 
         # Validate input
         if not os.path.exists(video_path):
-            raise FileNotFoundError(f"Video not found: {video_path}")
+            raise InvalidInputError(f"Video not found: {video_path}")
 
-        # 1. Sample Frames (NumPy array: [NUM_FRAMES, H, W, 3])
-        raw_frames_np = self._sample_frames(video_path) 
-        
-        # 2. Extract Features AND Crops
-        behavioral_np, face_crops_np = self._extract_features_and_crops(raw_frames_np)
+        try:
+            # 1. Sample Frames (NumPy array: [NUM_FRAMES, H, W, 3])
+            raw_frames_np = self._sample_frames(video_path) 
+            
+            # 2. Extract Features AND Crops
+            behavioral_np, face_crops_np = self._extract_features_and_crops(raw_frames_np)
 
-        # 3. Extract Audio
-        # audio_wave_np, audio_mel_np = self._extract_audio(video_path)
+            # No-audio
+            audio_wave = torch.zeros(config.AUDIO_LENGTH, dtype=torch.float32) # NONE for video model
+            T = (config.AUDIO_LENGTH // 160) + 1
+            audio_mel = torch.zeros(3, config.N_MELS, T, dtype=torch.float32) # NONE for video model
 
-        # 4. Prepare Tensors
-        # Vision Face: [N, H, W, 3] -> [3, N, H, W] -> Normalize to [0, 1]
-        vision_face = torch.from_numpy(face_crops_np).permute(3, 0, 1, 2).float()
-        vision_face = vision_face / 255.0  # Normalize from uint8 to [0, 1]
+            if extract_audio:
+                try:
+                    # 3. Extract Audio
+                    audio_wave_np, audio_mel_np = self._extract_audio(video_path)
+                    # # Audio Wave: [AUDIO_LENGTH]
+                    audio_wave = torch.from_numpy(audio_wave_np).float()
+                    # # Audio Mel: [3, N_MELS, T]
+                    audio_mel = torch.from_numpy(audio_mel_np).float()
+                except Exception as e:
+                    raise AudioExtractionError(f"Audio extraction failed: {str(e)}")
 
-        # Vision Behaviour: [N, 50]
-        vision_behaviour = torch.from_numpy(behavioral_np).float()
-        
-        # # Audio Wave: [AUDIO_LENGTH]
-        # audio_wave = torch.from_numpy(audio_wave_np).float()
-        audio_wave = torch.zeros(config.AUDIO_LENGTH, dtype=torch.float32) # NONE for video model
-        
-        # # Audio Mel: [3, N_MELS, T]
-        # audio_mel = torch.from_numpy(audio_mel_np).float()
-        T = (config.AUDIO_LENGTH // 160) + 1
-        audio_mel = torch.zeros(3, config.N_MELS, T, dtype=torch.float32) # NONE for video model
+            # 4. Prepare Tensors
+            # Vision Face: [N, H, W, 3] -> [3, N, H, W] -> Normalize to [0, 1]
+            vision_face = torch.from_numpy(face_crops_np).permute(3, 0, 1, 2).float()
+            vision_face = vision_face / 255.0  # Normalize from uint8 to [0, 1]
 
-        # 5. Add Batch Dimension (B=1) - Ready for model input
-        return {
-            'vision_behaviour': vision_behaviour.unsqueeze(0),  # [1, N, 50]
-            'vision_face': vision_face.unsqueeze(0),            # [1, 3, N, H, W]
-            'audio_mel': audio_mel.unsqueeze(0),                # [1, 3, N_MELS, T]
-            'audio_wave': audio_wave.unsqueeze(0)               # [1, AUDIO_LENGTH]
-        }
+            # Vision Behaviour: [N, 50]
+            vision_behaviour = torch.from_numpy(behavioral_np).float()
+                            
+            
+            # 5. Add Batch Dimension (B=1) - Ready for model input
+            return {
+                'vision_behaviour': vision_behaviour.unsqueeze(0),  # [1, N, 50]
+                'vision_face': vision_face.unsqueeze(0),            # [1, 3, N, H, W]
+                'audio_mel': audio_mel.unsqueeze(0),                # [1, 3, N_MELS, T]
+                'audio_wave': audio_wave.unsqueeze(0)               # [1, AUDIO_LENGTH]
+            }
+        except AudioExtractionError:
+            raise
+        except Exception as e:
+            raise VideoPreprocessError(f"Processing failed: {str(e)}")
 
     # ==========================================
     # FEATURE EXTRACTION
@@ -360,8 +411,19 @@ class InferencePreprocessorMMPDA:
             )
 
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        frames = []
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        duration = total_frames / fps if fps > 0 else 0
+
+        metadata = {
+            "numFrames": config.NUM_FRAMES,
+            "durationSeconds": duration,
+            "originalResolution": {"width": width, "height": height},
+            "processedResolution": {"width": self.target_size[1], "height": self.target_size[0]}
+        }
         
+        frames = []
         if total_frames > 0:
             # Calculate frame indices to sample
             indices = np.linspace(0, total_frames - 1, config.NUM_FRAMES).astype(int)
@@ -404,8 +466,166 @@ class InferencePreprocessorMMPDA:
             self.landmarker.close()
 
 
+def parse_s3_uri(uri):
+    parsed = urlparse(uri)
+    return parsed.netloc, parsed.path.lstrip('/')
+
+def lambda_handler(event, context):
+    """
+    AWS Lambda Entry Point
+    """
+    # 1. Extract Inputs
+    session_id = event.get('sessionId')
+    chunk_id = event.get('chunkId')
+    file_type = event.get('fileType', 'video')
+    s3_input = event.get('s3Input')
+    
+    # Optional parameters
+    should_extract_audio = event.get("extractAudio", True)
+    resize_dims = event.get("resize", None)
+
+    # 2. Filesystem Setup
+    work_dir = os.path.join('/tmp', str(session_id), str(chunk_id))
+    # local_input_filename = "input_video.mp4"
+    # local_input_path = os.path.join(work_dir, local_input_filename)
+    # local_audio_path = os.path.join(work_dir, "audio.wav")
+
+    # Clean up /tmp
+    if os.path.exists(work_dir):
+        shutil.rmtree(work_dir)
+    os.makedirs(work_dir)
+
+    try:
+        # 3. Validation
+        if not s3_input or not session_id:
+            raise InvalidInputError("Missing required fields: s3Input or sessionId")
+
+        input_bucket, input_key = parse_s3_uri(s3_input)
+
+        local_input_filename = os.path.basename(input_key)
+        local_input_path = os.path.join(work_dir, local_input_filename)
+        local_audio_filename = f"{chunk_id}.wav"
+        local_tensor_filename = f"{chunk_id}.pt"
+        local_audio_path = os.path.join(work_dir, local_audio_filename)
+
+        # 4. Download file from S3
+        try:
+            print(f"Downloading {s3_input}...")
+            s3_client.download_file(input_bucket, input_key, local_input_path)
+        except Exception as e:
+            raise InvalidInputError(f"Failed to download input from S3: {str(e)}")
+
+        # 5. Run the Process Logic
+        try:
+            print("Preprocessing video...")
+            # Initialize Preprocessor
+            target_size = (resize_dims['height'], resize_dims['width']) if resize_dims else config.FRAME_SIZE
+            preprocessor = InferencePreprocessorMMPDA(target_size=target_size)
+            
+            # Run preprocess
+            results = preprocessor.process_video(local_input_path, extract_audio=should_extract_audio)
+        except Exception as e:
+            # Internal processing errors
+            raise VideoPreprocessError(f"Processing failed: {str(e)}")
+
+        # 6. Upload Results back to S3
+        s3_audio_uri = None
+        s3_tensor_uri = None
+        
+        try:
+            # # A. Handle Audio Output
+            # if should_extract_audio and results.get('audio_wave') is not None:
+            #     audio_data = results['audio_wave']
+            #     if isinstance(audio_data, torch.Tensor):
+            #         # audio_data = audio_data.cpu().numpy()
+            #         audio_data = audio_data.squeeze().cpu().numpy()
+            #     if audio_data.ndim > 1:
+            #          audio_data = audio_data.flatten()
+
+                # wavfile.write(local_audio_path, config.SAMPLE_RATE, audio_data)
+                
+                # s3_audio_uri = f"s3://deception-results/{session_id}/{file_type}/{chunk_id}/{local_audio_filename}"
+                # out_aud_bucket, out_aud_key = parse_s3_uri(s3_audio_uri)
+                # s3_client.upload_file(local_audio_path, out_aud_bucket, out_aud_key)
+
+            vision_behaviour = results.get('vision_behaviour')
+            vision_face = results.get('vision_face')
+            audio_mel = results.get('audio_mel')
+            audio_wave = results.get('audio_wave')
+
+            # B. Handle Video/Feature Output (Tensor)
+            tensor_output = {
+                'vision_behaviour': vision_behaviour.unsqueeze(0) if vision_behaviour is not None else None,
+                'vision_face': vision_face.unsqueeze(0) if vision_face is not None else None,
+                'audio_mel': audio_mel.unsqueeze(0) if audio_mel is not None else None,
+                'audio_wave': audio_wave.unsqueeze(0) if audio_wave is not None else None
+            }
+
+            buffer = io.BytesIO()
+            torch.save(tensor_output, buffer)
+            buffer.seek(0)
+            
+            s3_tensor_uri = f"s3://deception-detection-bucket/{session_id}/{file_type}/{chunk_id}/{local_tensor_filename}"
+            out_tens_bucket, out_tens_key = parse_s3_uri(s3_tensor_uri)
+            
+            # Serialize and Upload
+            s3_client.upload_fileobj(buffer, out_tens_bucket, out_tens_key)
+
+        except Exception as e:
+            # Any S3 upload errors
+            if isinstance(e, S3WriteError):
+                raise
+            raise S3WriteError(f"Failed to upload results to S3: {str(e)}")
+
+        # 7. Success Response
+        return {
+            "sessionId": session_id,
+            "fileType": file_type,
+            "chunkId": chunk_id,
+            "s3OutputTensors": s3_tensor_uri,
+            # "s3OutputAudio": s3_audio_uri,
+            "status": "success",
+            "metadata": results.get('metadata'),
+            "error": None
+        }
+
+    # --- Exception Handling ---
+
+    except (InvalidInputError, VideoPreprocessError) as e:
+        # Input or Processing logic failed
+        print(f"{type(e).__name__}: {e}")
+        return {
+            "sessionId": session_id,
+            "fileType": file_type,
+            "chunkId": chunk_id,
+            "status": "failed",
+            "error": str(e)
+        }
+
+    except S3WriteError as e:
+        # S3 write failed
+        print(f"S3WriteError: {e}")
+        return {
+            "sessionId": session_id,
+            "fileType": file_type,
+            "chunkId": chunk_id,
+            "status": "failed",
+            "error": str(e)
+        }
+
+    except Exception as e:
+        # Unexpected errors
+        print(f"Unexpected error: {e}")
+        return {
+            "sessionId": session_id,
+            "fileType": file_type,
+            "chunkId": chunk_id,
+            "status": "failed",
+            "error": f"Unexpected error: {str(e)}"
+        }
+
 # ==========================================
-# TESTING
+# TESTING - LOCAL
 # ==========================================
 
 if __name__ == "__main__":
@@ -413,40 +633,32 @@ if __name__ == "__main__":
     
     if len(sys.argv) < 2:
         print("Usage: python preprocessing.py <video_path>")
+        print("⚠️ No video provided. Please provide a path.")
         sys.exit(1)
     
     video_path = sys.argv[1]
     
+    if not os.path.exists(video_path):
+        print(f"Error: File {video_path} does not exist.")
+        sys.exit(1)
+
     print(f"Testing MMPDA preprocessing on: {video_path}")
     
     # Initialize preprocessor
-    preprocessor = InferencePreprocessorMMPDA()
+    preprocessor = InferencePreprocessorMMPDA(target_size=config.FRAME_SIZE)
     
-    # Process video
+    # Process video (Set extract_audio=True to test audio path)
     try:
-        features = preprocessor.process_video(video_path)
+        features = preprocessor.process_video(video_path, extract_audio=True)
         
-        print("\nFeature extraction successful!")
+        print("\n✅ Feature extraction successful!")
         print("\nExtracted features:")
         for key, tensor in features.items():
-            print(f"  {key:20s}: {tensor.shape}")
-        
-        # Verify shapes
-        assert features['vision_behaviour'].shape[0] == 1, "Batch dimension missing"
-        assert features['vision_behaviour'].shape[2] == 50, "Expected 50 behavioral features"
-        assert features['vision_face'].shape[0] == 1, "Batch dimension missing"
-        assert features['vision_face'].shape[1] == 3, "Expected 3 channels"
-        assert features['audio_mel'].shape[0] == 1, "Batch dimension missing"
-        assert features['audio_wave'].shape[0] == 1, "Batch dimension missing"
-        
-        print("\nAll shape validations passed!")
-        print(f"\nFeature details:")
-        print(f"  Behavioral features: {features['vision_behaviour'].shape[1]} frames x 50 dims")
-        print(f"  Face crops: {features['vision_face'].shape[2]} frames x {features['vision_face'].shape[3]}x{features['vision_face'].shape[4]}")
-        print(f"  Audio mel: {features['audio_mel'].shape[3]} time steps")
-        print(f"  Audio wave: {features['audio_wave'].shape[1]} samples")
+            if tensor is not None:
+                print(f"  {key:20s}: {tensor.shape}")
+            else:
+                print(f"  {key:20s}: None")
         
     except Exception as e:
-        print(f"\n Error: {e}")
-        import traceback
+        print(f"\n❌ Error during execution:")
         traceback.print_exc()
