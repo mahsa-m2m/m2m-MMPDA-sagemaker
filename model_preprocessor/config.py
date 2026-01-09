@@ -3,3 +3,4 @@ SAMPLE_RATE = 16000
 N_MELS = 128
 AUDIO_LENGTH = 80000 
 NUM_FRAMES = 64 # T
+MODEL_ASSET = "face_landmarker.task"

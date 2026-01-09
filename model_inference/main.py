@@ -262,7 +262,7 @@ if __name__ == "__main__":
     service = FusionInference()
     
     # Example: List of 100 features.pt
-    feature_list = ["/home/sagemaker-user/mahsa-m2m-MMPDA-sagemaker/model_inference/TTTT_1006_class_Truth_33.pt"]
+    feature_list = ["/home/sagemaker-user/mahsa-m2m-MMPDA-sagemaker/model_preprocessor/test.pt"]
     
     # Run in batch mode
     batch_results = service.predict_batch_silent(feature_list, batch_size=4, num_workers=4)
@@ -278,7 +278,3 @@ if __name__ == "__main__":
 
         print(f"{vid_name:<40} | {res['predicted_label']:<10} | "
               f"{res['deceptive_prob']:.4f}          |  {res['truthful_prob']:.4f} ")
-
-    # for res in batch_results:
-    #     print(f"[{res['predicted_label']}] {os.path.basename(res['video_path'])} "
-    #           f"(Deceptive: {res['deceptive_prob']:.4f}, Truthful: {res['truthful_prob']:.4f})")
