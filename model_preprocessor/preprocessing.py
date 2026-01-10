@@ -497,7 +497,7 @@ if __name__ == "__main__":
     preprocessor = InferencePreprocessorMMPDA()
     
     # Run on a video
-    video_path = "model_preprocessor/TTTT_1006_class_Truth_33.mkv" 
+    video_path = "/home/sagemaker-user/mahsa-m2m-MMPDA-sagemaker/sample/train/truthful/TTTT_2986_class_Truth_85.mp4" 
     
     if os.path.exists(video_path):
         result = preprocessor.process_video(video_path)
