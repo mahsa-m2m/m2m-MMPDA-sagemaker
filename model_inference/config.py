@@ -2,16 +2,17 @@ import os
 from types import SimpleNamespace
 
 # --- PATHS ---
-# MODEL_WEIGHTS_PATH = os.getenv("MODEL_WEIGHTS_PATH", "model/best_model_loss_acc_72.pt")
 MODEL_WEIGHTS_PATH = "/home/sagemaker-user/mahsa-m2m-MMPDA-sagemaker/model/best_model_loss_ep9_acc78_NoAudio.pt"
 DEVICE = "cuda" if os.getenv("USE_GPU", "false").lower() == "true" else "cpu"
+NUM_WORKERS = 0
+BATCH_SIZE = 4
 
 # --- DATA PROCESSING CONFIG ---
-NUM_FRAMES = 64 # T
-FRAME_SIZE = (224, 224)
-AUDIO_LENGTH = 80000 
-SAMPLE_RATE = 16000
-N_MELS = 128
+# NUM_FRAMES = 64 # T
+# FRAME_SIZE = (224, 224)
+# AUDIO_LENGTH = 80000 
+# SAMPLE_RATE = 16000
+# N_MELS = 128
 
 # --- MODEL ARGUMENTS ---
 MODEL_ARGS = SimpleNamespace(
@@ -30,6 +31,6 @@ MODEL_ARGS = SimpleNamespace(
     embed_dropout = 0.0,
     attn_mask = False,
     
-    # Any other args sub-models might need
+    # Any other args sub-models
     bidirectional = False 
 )

@@ -331,161 +331,161 @@ class InferencePreprocessorMMPDA:
 # LAMBDA HANDLER
 # ==========================================
 
-# def parse_s3_url(s3_url):
-#     """Parses s3://bucket/key into bucket and key."""
-#     parsed = urllib.parse.urlparse(s3_url)
-#     return parsed.netloc, parsed.path.lstrip('/')
+def parse_s3_url(s3_url):
+    """Parses s3://bucket/key into bucket and key."""
+    parsed = urllib.parse.urlparse(s3_url)
+    return parsed.netloc, parsed.path.lstrip('/')
 
-# def lambda_handler(event: Dict[str, Any], context=None) -> Dict[str, Any]:
-#     s3_client = boto3.client('s3')
+def lambda_handler(event: Dict[str, Any], context=None) -> Dict[str, Any]:
+    s3_client = boto3.client('s3')
     
-#     input_path = None
-#     output_video_path = None
-#     output_audio_path = None
+    input_path = None
+    output_video_path = None
+    output_audio_path = None
     
-#     try:
-#         # 1. Parse Input
-#         session_id = event.get('sessionId')
-#         file_type = event.get('fileType')
-#         chunk_id = event.get('chunkId')
-#         s3_input = event.get('s3Input')
-#         metadata = event.get('metadata', {})
-#         resize_config = event.get('resize', {})
-#         extract_audio = event.get('extractAudio', True)
+    try:
+        # 1. Parse Input
+        session_id = event.get('sessionId')
+        file_type = event.get('fileType')
+        chunk_id = event.get('chunkId')
+        s3_input = event.get('s3Input')
+        metadata = event.get('metadata', {})
+        resize_config = event.get('resize', {})
+        extract_audio = event.get('extractAudio', True)
         
-#         # Check required fields
-#         if not all([session_id, file_type, chunk_id, s3_input]):
-#             raise InvalidInputError(f"Missing required fields. Received: {list(event.keys())}")
+        # Check required fields
+        if not all([session_id, file_type, chunk_id, s3_input]):
+            raise InvalidInputError(f"Missing required fields. Received: {list(event.keys())}")
             
-#         input_bucket, input_key = parse_s3_path(s3_input)
+        input_bucket, input_key = parse_s3_url(s3_input)
         
 
-#         # 2. Download Input Video
-#         _, file_extension = os.path.splitext(input_key)
-#         if not file_extension:
-#             file_extension = '.mp4'
+        # 2. Download Input Video
+        _, file_extension = os.path.splitext(input_key)
+        if not file_extension:
+            file_extension = '.mp4'
 
-#         with tempfile.NamedTemporaryFile(suffix=file_extension, delete=False) as tmp_file:
-#             print(f"⬇️ Downloading {s3_input}...")
-#             s3_client.download_file(input_bucket, input_key, tmp_file.name)
-#             input_path = tmp_file.name
+        with tempfile.NamedTemporaryFile(suffix=file_extension, delete=False) as tmp_file:
+            print(f"⬇️ Downloading {s3_input}...")
+            s3_client.download_file(input_bucket, input_key, tmp_file.name)
+            input_path = tmp_file.name
         
-#         try:
-#             # 3. Process
-#             override_config = {}
-#             if 'width' in resize_config and 'height' in resize_config:
-#                 override_config['frame_size'] = (resize_config['height'], resize_config['width'])
+        try:
+            # 3. Process
+            override_config = {}
+            if 'width' in resize_config and 'height' in resize_config:
+                override_config['frame_size'] = (resize_config['height'], resize_config['width'])
             
-#             processor = InferencePreprocessorMMPDA(override_config)
-#             sample_dict, original_dims = processor.process_video(input_path)
+            processor = InferencePreprocessorMMPDA(override_config)
+            sample_dict, original_dims = processor.process_video(input_path)
             
-#             # 4. Save and Upload Results
-#             output_bucket = input_bucket 
+            # 4. Save and Upload Results
+            output_bucket = input_bucket 
             
-#             # Save Video Tensors (.pt)
-#             with tempfile.NamedTemporaryFile(suffix='.pt', delete=False) as tmp_out_vid:
-#                 torch.save(sample_dict, tmp_out_vid.name)
-#                 output_video_path = tmp_out_vid.name
+            # Save Video Tensors (.pt)
+            with tempfile.NamedTemporaryFile(suffix='.pt', delete=False) as tmp_out_vid:
+                torch.save(sample_dict, tmp_out_vid.name)
+                output_video_path = tmp_out_vid.name
                 
-#             s3_video_key = f"{session_id}/video/{chunk_id}/preprocessed.pt"
-#             s3_video_uri = f"s3://{output_bucket}/{s3_video_key}"
+            s3_video_key = f"{session_id}/video/{chunk_id}/preprocessed.pt"
+            s3_video_uri = f"s3://{output_bucket}/{s3_video_key}"
             
-#             try:
-#                 print(f"⬆️ Uploading video tensor to {s3_video_uri}...")
-#                 s3_client.upload_file(output_video_path, output_bucket, s3_video_key)
-#             except Exception as e:
-#                 raise S3WriteError(f"Failed to upload video output: {str(e)}")
+            try:
+                print(f"⬆️ Uploading video tensor to {s3_video_uri}...")
+                s3_client.upload_file(output_video_path, output_bucket, s3_video_key)
+            except Exception as e:
+                raise S3WriteError(f"Failed to upload video output: {str(e)}")
 
-#             # Save Audio if requested
-#             s3_audio_uri = None
-#             if extract_audio:
-#                 with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp_out_aud:
-#                     # sample_dict['audio_wave'] is [1, Length], squeeze to [Length] for saving
-#                     wav_tensor = sample_dict['audio_wave'].squeeze(0)
-#                     torchaudio.save(tmp_out_aud.name, wav_tensor, config.SAMPLE_RATE)
-#                     output_audio_path = tmp_out_aud.name
+            # Save Audio if requested
+            s3_audio_uri = None
+            if extract_audio:
+                with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp_out_aud:
+                    # sample_dict['audio_wave'] is [1, Length], squeeze to [Length] for saving
+                    wav_tensor = sample_dict['audio_wave'].squeeze(0)
+                    torchaudio.save(tmp_out_aud.name, wav_tensor, config.SAMPLE_RATE)
+                    output_audio_path = tmp_out_aud.name
                 
-#                 s3_audio_key = f"{session_id}/video/{chunk_id}/audio.wav"
-#                 s3_audio_uri = f"s3://{output_bucket}/{s3_audio_key}"
+                s3_audio_key = f"{session_id}/video/{chunk_id}/audio.wav"
+                s3_audio_uri = f"s3://{output_bucket}/{s3_audio_key}"
                 
-#                 try:
-#                     print(f"⬆️ Uploading audio to {s3_audio_uri}...")
-#                     s3_client.upload_file(output_audio_path, output_bucket, s3_audio_key)
-#                 except Exception as e:
-#                     raise S3WriteError(f"Failed to upload audio output: {str(e)}")
+                try:
+                    print(f"⬆️ Uploading audio to {s3_audio_uri}...")
+                    s3_client.upload_file(output_audio_path, output_bucket, s3_audio_key)
+                except Exception as e:
+                    raise S3WriteError(f"Failed to upload audio output: {str(e)}")
             
-#             # Success Return
-#             response_metadata = {
-#                 "numFrames": processor.num_frames,
-#                 "durationSeconds": int(sample_dict['audio_wave'].shape[-1] / config.SAMPLE_RATE),
-#                 "originalResolution": {"width": original_dims[0], "height": original_dims[1]},
-#                 "processedResolution": {"width": processor.frame_size[1], "height": processor.frame_size[0]}
-#             }
+            # Success Return
+            response_metadata = {
+                "numFrames": processor.num_frames,
+                "durationSeconds": int(sample_dict['audio_wave'].shape[-1] / config.SAMPLE_RATE),
+                "originalResolution": {"width": original_dims[0], "height": original_dims[1]},
+                "processedResolution": {"width": processor.frame_size[1], "height": processor.frame_size[0]}
+            }
             
-#             return {
-#                 "sessionId": session_id,
-#                 "fileType": file_type,
-#                 "chunkId": chunk_id,
-#                 "s3OutputVideo": s3_video_uri,
-#                 "s3OutputAudio": s3_audio_uri,
-#                 "status": "success",
-#                 "metadata": response_metadata,
-#                 "error": None
-#             }
+            return {
+                "sessionId": session_id,
+                "fileType": file_type,
+                "chunkId": chunk_id,
+                "s3OutputVideo": s3_video_uri,
+                "s3OutputAudio": s3_audio_uri,
+                "status": "success",
+                "metadata": response_metadata,
+                "error": None
+            }
 
-#         finally:
-#             # Inner Cleanup (Processing files)
-#             # Input is cleaned in outer finally
-#             pass
+        finally:
+            # Inner Cleanup (Processing files)
+            # Input is cleaned in outer finally
+            pass
             
-#     # ==========================================
-#     # ERROR HANDLING
-#     # ==========================================
-#     except InvalidInputError as e:
-#         return {
-#             "sessionId": event.get('sessionId', 'unknown'),
-#             "fileType": event.get('fileType', 'unknown'),
-#             "chunkId": event.get('chunkId', 'unknown'),
-#             "status": "failed",
-#             "metadata": {},
-#             "error": f"InvalidInputError: {str(e)}"
-#         }
-#     except (VideoPreprocessError, AudioExtractionError) as e:
-#         return {
-#             "sessionId": event.get('sessionId', 'unknown'),
-#             "fileType": event.get('fileType', 'unknown'),
-#             "chunkId": event.get('chunkId', 'unknown'),
-#             "status": "failed",
-#             "metadata": {},
-#             "error": f"PreprocessingError: {str(e)}"
-#         }
-#     except S3WriteError as e:
-#         return {
-#             "sessionId": event.get('sessionId', 'unknown'),
-#             "fileType": event.get('fileType', 'unknown'),
-#             "chunkId": event.get('chunkId', 'unknown'),
-#             "status": "failed",
-#             "metadata": {},
-#             "error": f"S3WriteError: {str(e)}"
-#         }
-#     except Exception as e:
-#         return {
-#             "sessionId": event.get('sessionId', 'unknown'),
-#             "fileType": event.get('fileType', 'unknown'),
-#             "chunkId": event.get('chunkId', 'unknown'),
-#             "status": "failed",
-#             "metadata": {},
-#             "error": f"UnexpectedError: {str(e)}\n{traceback.format_exc()}"
-#         }
+    # ==========================================
+    # ERROR HANDLING
+    # ==========================================
+    except InvalidInputError as e:
+        return {
+            "sessionId": event.get('sessionId', 'unknown'),
+            "fileType": event.get('fileType', 'unknown'),
+            "chunkId": event.get('chunkId', 'unknown'),
+            "status": "failed",
+            "metadata": {},
+            "error": f"InvalidInputError: {str(e)}"
+        }
+    except (VideoPreprocessError, AudioExtractionError) as e:
+        return {
+            "sessionId": event.get('sessionId', 'unknown'),
+            "fileType": event.get('fileType', 'unknown'),
+            "chunkId": event.get('chunkId', 'unknown'),
+            "status": "failed",
+            "metadata": {},
+            "error": f"PreprocessingError: {str(e)}"
+        }
+    except S3WriteError as e:
+        return {
+            "sessionId": event.get('sessionId', 'unknown'),
+            "fileType": event.get('fileType', 'unknown'),
+            "chunkId": event.get('chunkId', 'unknown'),
+            "status": "failed",
+            "metadata": {},
+            "error": f"S3WriteError: {str(e)}"
+        }
+    except Exception as e:
+        return {
+            "sessionId": event.get('sessionId', 'unknown'),
+            "fileType": event.get('fileType', 'unknown'),
+            "chunkId": event.get('chunkId', 'unknown'),
+            "status": "failed",
+            "metadata": {},
+            "error": f"UnexpectedError: {str(e)}\n{traceback.format_exc()}"
+        }
         
-#     finally:
-#         # Cleanup temporary files
-#         for p in [input_path, output_video_path, output_audio_path]:
-#             if p and os.path.exists(p):
-#                 try:
-#                     os.unlink(p)
-#                 except Exception:
-#                     pass
+    finally:
+        # Cleanup temporary files
+        for p in [input_path, output_video_path, output_audio_path]:
+            if p and os.path.exists(p):
+                try:
+                    os.unlink(p)
+                except Exception:
+                    pass
 
 
 # ==========================================
