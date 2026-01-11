@@ -326,7 +326,6 @@ def lambda_handler(event: Dict[str, Any], context=None) -> Dict[str, Any]:
     chunk_path = None
 
     try:
-
         required_keys = ['sessionId', 'chunkId', 's3InputTensor']
         for key in required_keys:
             if key not in event:
@@ -348,6 +347,8 @@ def lambda_handler(event: Dict[str, Any], context=None) -> Dict[str, Any]:
             [chunk_path], 
             batch_size=config.BATCH_SIZE
         )
+        print('========================')
+        print(batch_results)
 
         if not batch_results:
             raise ValueError("Model inference returned no results.")
