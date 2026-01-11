@@ -2,7 +2,7 @@ import os
 from types import SimpleNamespace
 
 # --- PATHS ---
-MODEL_WEIGHTS_PATH = "/home/sagemaker-user/mahsa-m2m-MMPDA-sagemaker/model/best_model_loss_ep9_acc78_NoAudio.pt"
+MODEL_WEIGHTS_PATH = "model/best_model_loss_ep9_acc78_NoAudio.pt"
 DEVICE = "cuda" if os.getenv("USE_GPU", "false").lower() == "true" else "cpu"
 NUM_WORKERS = 0
 BATCH_SIZE = 4
