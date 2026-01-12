@@ -19,6 +19,5 @@ tqdm==4.66.2
 
 # sudo apt-get install -y libgl1
 # sudo apt-get install -y libglib2.0-0
-# conda install -c conda-forge ffmpeg -y
 
 # python train_test_feature.py --train_root sample/train --val_root sample/val --batchsize 4 --max_epochs 1 --fusion_type mult

@@ -1,0 +1,10 @@
+name: py311
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - ffmpeg
+  - sagemaker-python-sdk
+  - boto3
+  - s3fs-fuse
+prefix: /home/sagemaker-user/.conda/envs/py311
