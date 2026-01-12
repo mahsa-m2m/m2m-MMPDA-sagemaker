@@ -165,6 +165,10 @@ class InferencePreprocessorMMPDA:
 
     def _extract_audio(self, video_path, n_mels=128):
         """Robust audio extraction."""
+        
+        target_length = int(config.AUDIO_DURATION * self.sample_rate)
+
+
         try:
             # 1. Direct Load
             waveform, sr = torchaudio.load(video_path)
@@ -187,7 +191,8 @@ class InferencePreprocessorMMPDA:
                     "-vn", 
                     "-acodec", "pcm_s16le", 
                     "-ar", str(self.sample_rate),
-                    "-ac", "1", 
+                    "-ac", "1",
+                    "-t", str(config.AUDIO_DURATION),
                     temp_wav
                 ]
                 
@@ -215,11 +220,17 @@ class InferencePreprocessorMMPDA:
             if waveform.shape[0] > 1:
                 waveform = torch.mean(waveform, dim=0, keepdim=True)
 
+            # # Pad/Trim
+            # if waveform.shape[1] < self.audio_length:
+            #     waveform = torch.nn.functional.pad(waveform, (0, self.audio_length - waveform.shape[1]))
+            # else:
+            #     waveform = waveform[:, :self.audio_length]
+
             # Pad/Trim
-            if waveform.shape[1] < self.audio_length:
-                waveform = torch.nn.functional.pad(waveform, (0, self.audio_length - waveform.shape[1]))
+            if waveform.shape[1] < target_length:
+                waveform = torch.nn.functional.pad(waveform, (0, target_length - waveform.shape[1]))
             else:
-                waveform = waveform[:, :self.audio_length]
+                waveform = waveform[:, target_length]
 
             # Mel Spec
             mel_transform = torchaudio.transforms.MelSpectrogram(
