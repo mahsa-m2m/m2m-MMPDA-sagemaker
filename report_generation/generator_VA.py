@@ -8,7 +8,7 @@ class DeceptionReportGenerator:
         self.chunks = []
         self.modality = "Unknown"
 
-    def add_chunk(self, api_response, inference_result):
+    def add_chunk(self, api_response):
         """
         Parses the input.
         
@@ -18,23 +18,22 @@ class DeceptionReportGenerator:
         """
         # Extract Metadata from API Response
         self.modality = api_response.get('fileType', 'Unknown').capitalize()
-        duration = api_response.get('metadata', {}).get('durationSeconds', 10)
+        metadata = api_response.get('metadata', {}) 
+        duration = metadata.get('durationSeconds', 10)
         
-        # Extract Prediction from Inference JSON
-        data = inference_result[0] if isinstance(inference_result, list) else inference_result
-        
-        pred_label = data.get('predicted_label', 'UNCERTAIN')
+        # Extract Prediction
+        # data = str(metadata.get('prediction', '0'))
+        raw_prediction = str(metadata.get('prediction', '0'))
+        confidence = float(metadata.get('confidence', 0.0))
         
         # Calculate confidence based on the predicted label
-        prob_truth = data.get('truthful_prob', 0.0)
-        prob_decep = data.get('deceptive_prob', 0.0)
-        
-        if pred_label.lower() == 'deceptive':
-            confidence = prob_decep
-        elif pred_label.lower() == 'truthful':
-            confidence = prob_truth
+        # prob_truth = data.get('truthful_prob', 0.0)
+        # prob_decep = data.get('deceptive_prob', 0.0)
+
+        if raw_prediction == '1':
+            pred_label = 'DECEPTIVE'
         else:
-            confidence = max(prob_truth, prob_decep)
+            pred_label = 'TRUTHFUL'
 
         # UNCERTAIN label
         if confidence < 0.60:
@@ -152,10 +151,16 @@ class DeceptionReportGenerator:
 # ==========================================
 
 '''
-[{"feature_path": "/tmp/tmpceq98k7c.pt",
-"truthful_prob": 0.10476028919219971, 
-"deceptive_prob": 0.8952397108078003, 
-"predicted_label": "Deceptive"}]
+{"sessionId": "test-session-002",
+"fileType": "tensor",
+"chunkId": "chunk_01", 
+"s3Output": "s3://deception-detection-bucket/results/test-session-002/video/chunk_01/inference.json",
+"status": "success", 
+"metadata": {"originalResolution": {"width": 0, "height": 0}, 
+                "numFrames": 64, 
+                "prediction": "1", 
+                "confidence": 0.8952397108078003}, 
+"error": null}
 '''
 
 
@@ -167,16 +172,18 @@ response_01 = {
   "s3Output": "s3://deceptive-detection-bucket/results",
   "status": "success",
   "metadata": { "originalResolution": {"width": 1920, "height": 1080},
-                "numFrames": 120,
+                "numFrames": 64, 
+                "prediction": "0", 
+                "confidence": 0.8952397108078003,
                 "durationSeconds": 10 }
 }
 
-json_01 = [
-    {"feature_path": "/tmp/tmpceq98k7c.pt",
-    "truthful_prob": 0.1047,
-    "deceptive_prob": 0.8952,
-    "predicted_label": "Deceptive"}
-]
+# json_01 = [
+#     {"feature_path": "/tmp/tmpceq98k7c.pt",
+#     "truthful_prob": 0.1047,
+#     "deceptive_prob": 0.8952,
+#     "predicted_label": "Deceptive"}
+# ]
 
 # CHUNK 2 Data (Truthful)
 response_02 = {
@@ -186,16 +193,18 @@ response_02 = {
   "s3Output": "s3://deceptive-detection-bucket/results",
   "status": "success",
   "metadata": { "originalResolution": {"width": 1920, "height": 1080},
-                "numFrames": 120,
+                "numFrames": 64, 
+                "prediction": "1", 
+                "confidence": 0.8765,
                 "durationSeconds": 10}
 }
 
-json_02 = [
-    {"feature_path": "/tmp/tmpceq98677s.pt",
-    "truthful_prob": 0.9210,
-    "deceptive_prob": 0.0790,
-    "predicted_label": "Truthful"}
-]
+# json_02 = [
+#     {"feature_path": "/tmp/tmpceq98677s.pt",
+#     "truthful_prob": 0.9210,
+#     "deceptive_prob": 0.0790,
+#     "predicted_label": "Truthful"}
+# ]
 
 # CHUNK 3 Data (Truthful)
 response_03 = {
@@ -205,22 +214,24 @@ response_03 = {
   "s3Output": "s3://deceptive-detection-bucket/results",
   "status": "success",
   "metadata": { "originalResolution": {"width": 1920, "height": 1080},
-                "numFrames": 120,
-                "durationSeconds": 10}
+                "numFrames": 64, 
+                "prediction": "1", 
+                "confidence": 0.536,
+                "durationSeconds": 5}
 }
 
-json_03 = [
-    {"feature_path": "/tmp/tmpceq9856fs.pt",
-    "truthful_prob": 0.85,
-    "deceptive_prob": 0.15,
-    "predicted_label": "Truthful"}
-]
+# json_03 = [
+#     {"feature_path": "/tmp/tmpceq9856fs.pt",
+#     "truthful_prob": 0.85,
+#     "deceptive_prob": 0.15,
+#     "predicted_label": "Truthful"}
+# ]
 
 
 report_gen = DeceptionReportGenerator(case_id=response_01['sessionId'], file_name="interview.mp4")
 
-report_gen.add_chunk(response_01, json_01)
-report_gen.add_chunk(response_02, json_02)
-report_gen.add_chunk(response_03, json_03)
+report_gen.add_chunk(response_01)
+report_gen.add_chunk(response_02)
+report_gen.add_chunk(response_03)
 
 print(report_gen.generate())
