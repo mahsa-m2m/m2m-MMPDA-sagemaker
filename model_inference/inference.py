@@ -355,16 +355,6 @@ def lambda_handler(event: Dict[str, Any], context=None) -> Dict[str, Any]:
 
         output_key = f"results/{session_id}/video/{chunk_id}/inference.json"
 
-        try:
-            s3_client.put_object(
-                Bucket=input_bucket,
-                Key=output_key,
-                Body=json.dumps(batch_results),
-            )  
-        except Exception as e:
-            raise S3WriteError(f"Failed to write results: {str(e)}")
-
-
         # Success Response
         response_template['status'] = 'success' 
         response_template['s3Output'] = f"s3://{input_bucket}/{output_key}"
@@ -374,8 +364,15 @@ def lambda_handler(event: Dict[str, Any], context=None) -> Dict[str, Any]:
             response_template['metadata']['confidence'] = batch_results[0]['truthful_prob']
         else:
             response_template['metadata']['confidence'] = batch_results[0]['deceptive_prob']
-            
-        
+
+        try:
+            s3_client.put_object(
+                Bucket=input_bucket,
+                Key=output_key,
+                Body=json.dumps(response_template),
+            )  
+        except Exception as e:
+            raise S3WriteError(f"Failed to write results: {str(e)}")
 
         return response_template  
     
