@@ -260,7 +260,7 @@ class FusionInference:
                         "feature_path": path,
                         "truthful_prob": p_list[0],
                         "deceptive_prob": p_list[1],
-                        "predicted_label": "Deceptive" if p_list[1] > p_list[0] else "Truthful"
+                        "predicted_label": "1" if p_list[1] > p_list[0] else "0" # 1: Deceptive  # 0: Truthful
                     })
 
         return results
@@ -347,8 +347,8 @@ def lambda_handler(event: Dict[str, Any], context=None) -> Dict[str, Any]:
             [chunk_path], 
             batch_size=config.BATCH_SIZE
         )
-        print('========================')
-        print(batch_results)
+        # print('========================')
+        # print(batch_results)
 
         if not batch_results:
             raise ValueError("Model inference returned no results.")
@@ -369,6 +369,13 @@ def lambda_handler(event: Dict[str, Any], context=None) -> Dict[str, Any]:
         response_template['status'] = 'success' 
         response_template['s3Output'] = f"s3://{input_bucket}/{output_key}"
         response_template['metadata']['prediction'] = batch_results[0]['predicted_label']
+        
+        if batch_results[0]['predicted_label'] == "0":
+            response_template['metadata']['confidence'] = batch_results[0]['truthful_prob']
+        else:
+            response_template['metadata']['confidence'] = batch_results[0]['deceptive_prob']
+            
+        
 
         return response_template  
     
