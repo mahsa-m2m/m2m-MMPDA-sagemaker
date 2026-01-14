@@ -48,18 +48,18 @@ def process_fusion_request(data):
         # Log error here if needed
         return {"status": "error", "message": str(e)}
 
-# # --- Usage Example ---
-# if __name__ == "__main__":
-#     # Test Case 1: Both Present
-#     test_input = {
-#         "video_probs": [0.1, 0.9], # Says Deceptive
-#         "audio_probs": [0.4, 0.6]  # Says Deceptive
-#     }
-#     print("Test 1 (Both):", process_fusion_request(test_input))
+# --- Usage Example ---
+if __name__ == "__main__":
+    # Test Case 1: Both Present
+    test_input = {
+        "video_probs": [0.1, 0.9], # Says Deceptive
+        "audio_probs": [0.4, 0.6]  # Says Deceptive
+    }
+    print("Test 1 (Both):", process_fusion_request(test_input))
 
-#     # Test Case 2: Audio Only (Video Missing)
-#     test_input_2 = {
-#         "video_probs": None,
-#         "audio_probs": [0.8, 0.2]  # Says Truthful
-#     }
-#     print("Test 2 (Audio Only):", process_fusion_request(test_input_2))
+    # Test Case 2: Audio Only (Video Missing)
+    test_input_2 = {
+        "video_probs": None,
+        "audio_probs": [0.8, 0.2]  # Says Truthful
+    }
+    print("Test 2 (Audio Only):", process_fusion_request(test_input_2))
