@@ -4,62 +4,122 @@ from fusion_engine import SoftVotingFusion
 # Initialize the engine once 
 engine = SoftVotingFusion(weights=config.FUSION_WEIGHTS)
 
-def process_fusion_request(data):
+def _extract_probs_from_response(response_data):
     """
-    Main entry point for the pipeline.
-    
-    Args:
-        data (dict): A dictionary containing probabilities.
-                     keys: 'video_probs', 'audio_probs'
-                     values: list of floats (e.g. [0.9, 0.1]) or None
-    
-    Returns:
-        dict: Final formatted result with label names.
+    Parses the specific model output JSON to create a probability distribution.
+    Class "0" = Truthful, Class "1" = Deceptive.
+    Returns: [Prob_Truthful, Prob_Deceptive]
     """
+    if not response_data or 'metadata' not in response_data:
+        return None
+
+    meta = response_data['metadata']
+    prediction = str(meta.get('prediction', '0')) # "0" or "1"
+    confidence = float(meta.get('confidence', 0.5))
+
+    # Normalize into vector: [Prob_Truthful, Prob_Deceptive]
+    if prediction == '1':
+        return [1.0 - confidence, confidence]
+    else:
+        return [confidence, 1.0 - confidence]
+
+def determine_primary_modality(video_probs, audio_probs, winning_index, weights):
+    """
+    Calculates which modality contributed more to the winning label.
+    """
+    # If Audio is missing, Video is automatically the primary
+    if audio_probs is None:
+        return "video"
+
+    # Get the probability each modality assigned to the WINNING class
+    v_contribution = video_probs[winning_index] * weights.get('video', 0.0)
+    a_contribution = audio_probs[winning_index] * weights.get('audio', 0.0)
+
+    # Compare weighted contributions
+    if v_contribution >= a_contribution:
+        return "video"
+    else:
+        return "audio"
+
+def process_fusion_request(video_response, audio_response=None):
     try:
-        # 1. Extract Inputs
-        v_in = data.get("video_probs") # Can be None
-        a_in = data.get("audio_probs") # Can be None
+        # Extract Inputs
+        v_probs = _extract_probs_from_response(video_response)
+        a_probs = _extract_probs_from_response(audio_response)
 
-        # 2. Run Inference
-        result = engine.predict(video_probs=v_in, audio_probs=a_in)
+        # Validation
+        if audio_response and (video_response.get('chunkId') != audio_response.get('chunkId')):
+            return {"status": "error", "message": "Chunk ID mismatch"}
 
-        # 3. Check for internal logic errors (e.g., no inputs)
+        # Run Inference
+        result = engine.predict(video_probs=v_probs, audio_probs=a_probs)
+
         if result["status"] == "error":
             return result
 
-        # 4. Map Index to String Label (Truthful/Deceptive)
-        label_str = config.CLASS_LABELS.get(result["label_index"], "Unknown")
+        # Determine Primary Modality 
 
-        # 5. Format Final Output
+        primary = determine_primary_modality(
+            video_probs=v_probs, 
+            audio_probs=a_probs, 
+            winning_index=result['label_index'], 
+            weights=config.FUSION_WEIGHTS
+        )
+
+        # Format Final Output
         return {
-            "final_label": label_str,
-            "confidence": round(result["confidence"], 4),
-            "details": {
-                "truthful_score": round(result["probabilities"][0], 4),
-                "deceptive_score": round(result["probabilities"][1], 4),
-                "modalities_used": [
-                    k for k, v in [("video", v_in), ("audio", a_in)] if v is not None
-                ]
-            }
+            "primaryModality": primary, # "video" or "audio",
+            "prediction": str(result["label_index"]),
+            "confidence": result["confidence"]
         }
 
     except Exception as e:
-        # Log error here if needed
         return {"status": "error", "message": str(e)}
 
-# # --- Usage Example ---
-# if __name__ == "__main__":
-#     # Test Case 1: Both Present
-#     test_input = {
-#         "video_probs": [0.1, 0.9], # Says Deceptive
-#         "audio_probs": [0.4, 0.6]  # Says Deceptive
-#     }
-#     print("Test 1 (Both):", process_fusion_request(test_input))
+# --- Usage Example ---
+if __name__ == "__main__":    
+        
+    video_response = {
+        "sessionId": "session_123",
+        "fileType": "video",
+        "chunkId": "chunk_01",
+        "s3Output": "s3://deceptive-detection-bucket/results",
+        "status": "success",
+        "metadata": { 
+            "originalResolution": {"width": 1920, "height": 1080},
+            "numFrames": 64,
+            "prediction": "0", # Truthful
+            "confidence": 0.60,
+            "durationSeconds": 10 
+        }
+    }
 
-#     # Test Case 2: Audio Only (Video Missing)
-#     test_input_2 = {
-#         "video_probs": None,
-#         "audio_probs": [0.8, 0.2]  # Says Truthful
-#     }
-#     print("Test 2 (Audio Only):", process_fusion_request(test_input_2))
+    audio_response = {
+        "sessionId": "session_123",
+        "fileType": "audio",
+        "chunkId": "chunk_01",
+        "s3Output": "s3://deceptive-detection-bucket/results",
+        "status": "success",
+        "metadata": { 
+            "prediction": "1",      # Deceptive
+            "confidence": 0.95,
+            "durationSeconds": 10 
+        }
+    }
+
+    print("Running Fusion Process...")
+    final_report = process_fusion_request(video_response, audio_response)
+
+    print(final_report)
+    # print(json.dumps(final_report, indent=2))
+
+#  {
+#             "sessionId": video_response.get('sessionId'),
+#             "primaryModality": primary, # "video" or "audio"
+#             "chunkId": video_response.get('chunkId'),
+#             "s3Output": video_response.get('s3Output'), 
+#             "status": "success",
+#             "metadata": {
+#                 "prediction": str(result["label_index"]), 
+#                 "confidence": result["confidence"]
+#  }
