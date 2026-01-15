@@ -4,42 +4,17 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 import time
-
-import json
-import boto3
-import tempfile
-from typing import Dict, Any
-
-
-# current_dir = os.path.dirname(os.path.abspath(__file__))
-# parent_dir = os.path.dirname(current_dir)
-# sys.path.append(parent_dir)
-
+import logging
 
 try:
     from models_comp.fusion_model import MinimalFusionModule, FusionModule, FusionModuleSilent
     import config
-
 except ImportError as e:
     print(f"❌ Import Error: {e}")
     raise
 
+logger = logging.getLogger(__name__)
 
-
-class VideoInferenceError(Exception):
-    """Raised when inference fails."""
-    pass
-
-class S3WriteError(Exception):
-    """Raised when uploading results to S3 fails."""
-    pass
-
-class InvalidInputError(Exception):
-    """Raised when input parameters or files are missing/invalid."""
-    pass
-
-
-# --- HELPER DATASET FOR BATCHING ---
 class VideoInferenceDataset(Dataset):
     def __init__(self, feature_paths):
         """
@@ -88,7 +63,7 @@ class VideoInferenceDataset(Dataset):
 
             return data
         except Exception as e:
-            print(f"Skipping {feature_path}: {e}")
+            logger.error(f"Skipping {feature_path}: {e}")
             return {'valid': False, 'feature_path': feature_path}
 
 def collate_fn_filter_errors(batch):
@@ -100,12 +75,13 @@ def collate_fn_filter_errors(batch):
 
 class FusionInference:
     def __init__(self):
-        print(f"🚀 Initializing Fusion Service on {config.DEVICE}...")
+        
+        logger.info(f" Initializing Inference Service on {config.DEVICE}...")
 
         if not hasattr(config.MODEL_ARGS, 'device'):
             config.MODEL_ARGS.device = config.DEVICE
         
-        # Also ensure attn_mask exists (it is used in the get_network call)
+        # Also ensure attn_mask exists
         if not hasattr(config.MODEL_ARGS, 'attn_mask'):
             config.MODEL_ARGS.attn_mask = None
         
@@ -121,9 +97,9 @@ class FusionInference:
                 self.model.load_state_dict(checkpoint['model_state_dict'])
             else:
                 self.model.load_state_dict(checkpoint)
-            print("✅ Weights loaded successfully.")
+            logger.info(" Weights loaded successfully.")
         except Exception as e:
-            print(f"❌ Error loading weights: {e}")
+            logger.error(f"❌ Error loading weights: {e}")
 
         self.model.to(config.DEVICE)
         self.model.eval()
@@ -152,7 +128,7 @@ class FusionInference:
         )
 
         results = []
-        print(f"🔄 Processing {len(feature_paths)} pre-extracted features in batches of {batch_size}...")
+        logger.info(f" Processing {len(feature_paths)} features in batches of {batch_size}...")
 
         # total_script_start = time.perf_counter()
 
@@ -224,7 +200,7 @@ class FusionInference:
         )
 
         results = []
-        print(f"🔄 Processing {len(feature_paths)} pre-extracted features (Silent Mode)...")
+        logger.info(f" Processing {len(feature_paths)} features (Silent Mode)...")
 
         with torch.no_grad():
             for batch_idx, batch_data in enumerate(loader):
@@ -265,154 +241,3 @@ class FusionInference:
 
         return results
 
-
-"""
-    INPUT:
-    {
-    "sessionId": "string",
-    "fileType": "video",
-    "chunkId": "chunk_01",
-    "s3InputTensor": "s3://deception-results/session_123/video/chunk_01/preprocessed.json",
-    "modelVersion": "video-model-v1.0",
-    "metadata": {
-        "originalResolution": {"width": 1920, "height": 1080},
-        "numFrames": 120
-    }
-    }
-
-    OUTPUT:
-    {
-    "sessionId": "string",
-    "fileType": "video",
-    "chunkId": "chunk_01",
-    "s3Output": "s3://deception-results/session_123/video/chunk_01/inference.json",
-    "status": "success",
-    "metadata": {
-        "confidence": 0.92,
-        "prediction": 1,
-        "numFrames": 120,
-        "durationSeconds": 10,
-        "modelVersion": "video-model-v1.0"
-    },
-    "error": null
-}
-"""
-
-s3_client = boto3.client('s3')
-inference_engine = None
-
-def get_inference_engine():
-    global inference_engine
-    if inference_engine is None:
-        inference_engine = FusionInference()
-    return inference_engine
-
-def parse_s3_path(s3_path: str) -> tuple:
-    parts = s3_path.replace("s3://", "").split("/", 1)
-    return parts[0], parts[1]
-
-def lambda_handler(event: Dict[str, Any], context=None) -> Dict[str, Any]:
-
-    response_template = {
-        "sessionId": event.get('sessionId', 'unknown'),
-        "fileType": event.get('fileType', 'unknown'),
-        "chunkId": event.get('chunkId', 'unknown'),
-        "s3Output": "",
-        "status": "failed",
-        "metadata": event.get('metadata', {}),
-        "error": None
-    }
-
-    chunk_path = None
-
-    try:
-        required_keys = ['sessionId', 'chunkId', 's3InputTensor']
-        for key in required_keys:
-            if key not in event:
-                raise KeyError(key)
-
-        input_tensor_s3_url = event['s3InputTensor']
-        session_id = event['sessionId']
-        chunk_id = event['chunkId']
-        
-        input_bucket, input_key = parse_s3_path(input_tensor_s3_url)
-
-        with tempfile.NamedTemporaryFile(suffix='.pt', delete=False) as tmp_file:
-            s3_client.download_file(input_bucket, input_key, tmp_file.name)
-            chunk_path = tmp_file.name
-        
-        model = get_inference_engine()
-
-        batch_results = model.predict_batch_silent(
-            [chunk_path], 
-            batch_size=config.BATCH_SIZE
-        )
-        # print('========================')
-        # print(batch_results)
-
-        if not batch_results:
-            raise ValueError("Model inference returned no results.")
-
-        output_key = f"results/{session_id}/video/{chunk_id}/inference.json"
-
-        # Success Response
-        response_template['status'] = 'success' 
-        response_template['s3Output'] = f"s3://{input_bucket}/{output_key}"
-        response_template['metadata']['prediction'] = batch_results[0]['predicted_label']
-        
-        if batch_results[0]['predicted_label'] == "0":
-            response_template['metadata']['confidence'] = batch_results[0]['truthful_prob']
-        else:
-            response_template['metadata']['confidence'] = batch_results[0]['deceptive_prob']
-
-        try:
-            s3_client.put_object(
-                Bucket=input_bucket,
-                Key=output_key,
-                Body=json.dumps(response_template),
-            )  
-        except Exception as e:
-            raise S3WriteError(f"Failed to write results: {str(e)}")
-
-        return response_template  
-    
-    except KeyError as e:
-        response_template['error'] = f"Missing required field: {str(e)}"
-        return response_template
-
-    except S3WriteError as e:
-        response_template['error'] = str(e)
-        return response_template
-
-    except Exception as e:
-        print(f"Server Error: {str(e)}")
-        response_template['error'] = f"InferenceError: {str(e)}"
-        return response_template
-
-    finally:
-        # Cleanup temp file
-        if chunk_path and os.path.exists(chunk_path):
-            os.unlink(chunk_path)
-
-
-
-# if __name__ == "__main__":
-#     service = FusionInference()
-    
-#     # Example: List of 100 features.pt
-#     feature_list = ["/home/sagemaker-user/mahsa-m2m-MMPDA-sagemaker/model_preprocessor/test.pt"]
-    
-#     # Run in batch mode
-#     batch_results = service.predict_batch_silent(feature_list, batch_size=4, num_workers=4)
-
-#     print(f"Processed {len(batch_results)} videos.")
-
-#     # Print formatted results
-#     print(f"{'VIDEO NAME':<40} | {'LABEL':<10} | {'DECEPTIVE SCORE':<8} | {'TRUTHFUL SCORE':<8}")
-#     print("-" * 90)
-
-#     for res in batch_results:
-#         vid_name = os.path.basename(res['feature_path'])
-
-#         print(f"{vid_name:<40} | {res['predicted_label']:<10} | "
-#               f"{res['deceptive_prob']:.4f}          |  {res['truthful_prob']:.4f} ")
