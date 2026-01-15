@@ -1,47 +1,26 @@
 import os
 import torch
-import sys
 import subprocess
 import numpy as np
 import cv2
 import math
 import torchaudio
 import mediapipe as mp
-from pathlib import Path
-import config
-import json
-import boto3
-import urllib.parse
-import traceback
-from typing import Dict, Any, Tuple
+import logging
 import tempfile
+import config 
 
+from utils import VideoPreprocessError, AudioExtractionError, InvalidInputError
 
-class AudioExtractionError(Exception):
-    """Raised when audio extraction fails."""
-    pass
+logger = logging.getLogger(__name__)
 
-class VideoPreprocessError(Exception):
-    """Raised when video frame extraction or normalization fails."""
-    pass
-
-class S3WriteError(Exception):
-    """Raised when uploading results to S3 fails."""
-    pass
-
-class InvalidInputError(Exception):
-    """Raised when input parameters or files are missing/invalid."""
-    pass
-
-
-
-cv2.setNumThreads(0)
-
-class InferencePreprocessorMMPDA:
+class VideoFeatureExtractor:
     def __init__(self):
         """
         Initializes the preprocessor.
         """
+        logger.info("Initializing VideoFeatureExtractor")
+
         # 1. Load from Config
         self.num_frames = config.NUM_FRAMES
         self.frame_size = config.FRAME_SIZE
@@ -52,10 +31,12 @@ class InferencePreprocessorMMPDA:
         # 2. MediaPipe Model Exists
         self._ensure_model_exists()
 
+        logger.info("VideoFeatureExtractor initialized successfully")
+
     def _ensure_model_exists(self):
         """Checks for the MediaPipe task file and downloads it if missing."""
         if not os.path.exists(self.model_path):
-            print(f"⚙️ Downloading MediaPipe model to {self.model_path}...")
+            logger.info(f"Downloading MediaPipe model to {self.model_path}...")
             url = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task"
             try:
                 subprocess.check_call(["wget", "-O", self.model_path, url], stdout=subprocess.DEVNULL)
@@ -66,6 +47,7 @@ class InferencePreprocessorMMPDA:
                     with open(self.model_path, 'wb') as f:
                         f.write(response.content)
                 except Exception as req_e:
+                    logger.error(f"Failed to download MediaPipe model: {str(req_e)}")
                     raise VideoPreprocessError(f"Failed to download model: {str(req_e)}")
 
     def _get_mediapipe_features(self, blendshapes, matrix):
@@ -134,6 +116,7 @@ class InferencePreprocessorMMPDA:
 
     def _sample_frames(self, video_path):
         """Reads video frames using OpenCV."""
+        logger.debug(f"Sampling frames from {video_path}")
         try:
             frames = []
             cap = cv2.VideoCapture(video_path)
@@ -161,13 +144,13 @@ class InferencePreprocessorMMPDA:
             
             raise VideoPreprocessError("Video contains no valid frames.")
         except Exception as e:
+            logger.error(f"Frame sampling failed: {str(e)}")
             raise VideoPreprocessError(f"OpenCV frame sampling failed: {str(e)}")
 
     def _extract_audio(self, video_path, n_mels=128):
         """Robust audio extraction."""
-        
+        logger.debug("Extracting audio from video")
         target_length = int(config.AUDIO_DURATION * self.sample_rate)
-
 
         try:
             # 1. Direct Load
@@ -246,7 +229,7 @@ class InferencePreprocessorMMPDA:
 
     def _get_zero_audio(self, n_mels=128):
         """Generates zero-filled audio variables with exact shapes."""
-
+        
         # Shape: (1, audio_length)
         zero_waveform = torch.zeros((1, self.audio_length))
         
@@ -279,6 +262,7 @@ class InferencePreprocessorMMPDA:
         Returns:
             dict: Dictionary containing tensors ready for the model, or None on failure.
         """
+        logger.info(f"Starting video processing for: {video_path}")
         if not os.path.exists(video_path):
             raise InvalidInputError(f"Local video file not found at {video_path}")
 
@@ -343,6 +327,7 @@ class InferencePreprocessorMMPDA:
                     final_features.append(feat_vec)
                     final_crops.append(face_crop)
         except Exception as e:
+            logger.error(f"MediaPipe processing failed: {str(e)}")
             raise VideoPreprocessError(f"MediaPipe processing failed: {str(e)}")
             
         # 3. Audio
@@ -354,13 +339,14 @@ class InferencePreprocessorMMPDA:
                 # extraction
                 audio_wave, audio_mel = self._extract_audio(video_path)
             except Exception as e:
-                print(f"Warning: Audio extraction failed despite flag=True ({e}). Falling back to zeros.")
+                logger.warning(f"Audio extraction failed ({e}). Falling back to zeros.")
                 audio_wave, audio_mel = self._get_zero_audio(config.N_MELS)
         else:
             # Skip Audio, generate valid zeros
             audio_wave, audio_mel = self._get_zero_audio(config.N_MELS)
 
         # 4. Format Tensors
+        logger.info("Formatting final tensors")
         frames_tensor = torch.from_numpy(np.array(final_crops)).permute(3, 0, 1, 2).to(torch.uint8)
         feat_tensor = torch.from_numpy(np.array(final_features)).float()
         
@@ -377,205 +363,3 @@ class InferencePreprocessorMMPDA:
         
         return sample
 
-
-# ==========================================
-# LAMBDA HANDLER
-# ==========================================
-
-"""
-INPUT:
-    {
-        "sessionId": "string",                 // Unique identifier for session
-        "fileType": "video",                   // "video"
-        "chunkId": "chunk_01",                 // Identifier for this video chunk
-        "s3Input": "s3://deception-files/session_123/video/chunk_01.mp4",
-        "resize": {"width": 224, "height": 224}, // Optional: resize settings
-        "extractAudio": true,                  // Whether to extract audio from video
-        "metadata": {
-            "source": "web-upload"
-        }
-    }
-
-OUTPUT:
-    {
-        "sessionId": "string",
-        "fileType": "video",
-        "chunkId": "chunk_01",
-        "s3OutputVideo": "s3://deception-results/session_123/video/chunk_01/preprocessed.pt",
-        "s3OutputAudio": "s3://deception-results/session_123/video/chunk_01/audio.wav",
-        "status": "success",
-        "metadata": {
-            "numFrames": 120,
-            "durationSeconds": 10,
-            "originalResolution": {"width": 1920, "height": 1080},
-            "processedResolution": {"width": 224, "height": 224}
-        },
-        "error": null
-    }
-"""
-
-s3_client = boto3.client('s3')
-preprocessing_engine = None
-
-def get_preprocessing_engine():
-    global preprocessing_engine
-    if preprocessing_engine is None:
-        preprocessing_engine = InferencePreprocessorMMPDA()
-    return preprocessing_engine
-
-def parse_s3_path(s3_path: str) -> tuple:
-    parts = s3_path.replace("s3://", "").split("/", 1)
-    return parts[0], parts[1]
-
-
-def lambda_handler(event: Dict[str, Any], context=None) -> Dict[str, Any]:
-    
-    response_template = {
-        "sessionId": event.get('sessionId', 'unknown'),
-        "fileType": event.get('fileType', 'unknown'),
-        "chunkId": event.get('chunkId', 'unknown'),
-        "s3OutputVideo": "",
-        "s3OutputAudio": "",
-        "status": "failed",
-        "metadata": {
-            "numFrames": 120,
-            "durationSeconds": 10,
-            "originalResolution": {"width": 1920, "height": 1080},
-            "processedResolution": {"width": 224, "height": 224}
-        },
-        "error": None
-    }
-
-    chunk_path = None
-
-    try:
-        required_keys = ['sessionId', 'chunkId', 's3Input', 'extractAudio']
-        for key in required_keys:
-            if key not in event:
-                raise KeyError(key)
-        
-        # Parse Input
-        input_video_s3_url = event['s3Input']
-        session_id = event['sessionId']
-        chunk_id = event['chunkId']
-        # metadata = event.get('metadata', {})
-        extract_audio = event.get('extractAudio', True)
-        
-        input_bucket, input_key = parse_s3_path(input_video_s3_url)
-
-        # Download Input Video
-        _, file_extension = os.path.splitext(input_key)
-        if not file_extension:
-            file_extension = '.mp4'
-
-        with tempfile.NamedTemporaryFile(suffix=file_extension, delete=False) as tmp_file:
-            print(f"⬇️ Downloading {tmp_file.name}...")
-            s3_client.download_file(input_bucket, input_key, tmp_file.name)
-            input_path = tmp_file.name
-
-        preprocessor = get_preprocessing_engine()
-
-        # Process
-        # override_config = {}
-        # if 'width' in resize_config and 'height' in resize_config:
-        #     override_config['frame_size'] = (resize_config['height'], resize_config['width'])
-        
-        features = preprocessor.process_video(input_path, extract_audio)
-        
-        # Save and Upload Results
- 
-        s3_key_feature = f"{session_id}/video/{chunk_id}/feature.pt"
-        s3_uri_feature = f"s3://{input_bucket}/{s3_key_feature}"
-        # output_key_audio = f"results/{session_id}/video/{chunk_id}/audio.wav"
-
-        fd, output_feature_path = tempfile.mkstemp(suffix='.pt')
-        os.close(fd)  # IMPORTANT: Close the file descriptor immediately
-
-        try:
-            # Save Feature Tensors (.pt)
-            with tempfile.NamedTemporaryFile(suffix='.pt', delete=False) as tmp_out_feat:
-                torch.save(features, tmp_out_feat.name, pickle_protocol=4)
-                output_feature_path = tmp_out_feat.name
-
-            # Upload features
-            try:
-                print(f"⬆️ Uploading feature tensor to {s3_uri_feature}...")
-                s3_client.upload_file(output_feature_path, input_bucket, s3_key_feature)
-            except Exception as e:
-                raise S3WriteError(f"Failed to upload feature output: {str(e)}")
-
-            ######### Save Audio if requested #########
-            #   # if extract_audio:                   #
-            #                                         #
-            ###########################################
-        
-
-        except Exception as e:
-            raise S3WriteError(f"Failed to write results: {str(e)}")
-
-
-        # Success Response
-        response_template['status'] = 'success' 
-        response_template['s3OutputVideo'] = f"s3://{input_bucket}/{s3_key_feature}"
-        response_template['s3OutputAudio'] = f"s3://{input_bucket}/{s3_key_feature}"
-        response_template['metadata']['numFrames'] = config.NUM_FRAMES
-
-        return response_template  
-    
-    except (VideoPreprocessError, AudioExtractionError) as e:
-        response_template['metadata'] = {}
-        response_template['error'] = f"PreprocessingError: {str(e)}"
-        return response_template
-
-    except InvalidInputError as e:
-        response_template['metadata'] = {}
-        response_template['error'] = f"InvalidInputError: {str(e)}"
-        return response_template
-  
-    except KeyError as e:
-        response_template['error'] = f"Missing required field: {str(e)}"
-        return response_template
-
-    except S3WriteError as e:
-        response_template['error'] = str(e)
-        return response_template
-
-    finally:
-        # Cleanup temp file
-        if chunk_path and os.path.exists(chunk_path):
-            os.unlink(chunk_path)
-
-
-        # # Save Audio if requested
-        # s3_audio_uri = None
-        # if extract_audio:
-        #     with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp_out_aud:
-        #         # sample_dict['audio_wave'] is [1, Length], squeeze to [Length] for saving
-        #         wav_tensor = sample_dict['audio_wave'].squeeze(0)
-        #         torchaudio.save(tmp_out_aud.name, wav_tensor, config.SAMPLE_RATE)
-        #         output_audio_path = tmp_out_aud.name
-    
-
-# ==========================================
-# TEST LOCAL
-# ==========================================
-# if __name__ == "__main__":
-
-    # Initialize
-    preprocessor = InferencePreprocessorMMPDA()
-    
-    # Run on a video
-    video_path = "/home/sagemaker-user/mahsa-m2m-MMPDA-sagemaker/sample/train/truthful/TTTT_2986_class_Truth_85.mp4" 
-    
-    if os.path.exists(video_path):
-        result = preprocessor.process_video(video_path, extract_audio=True)
-        torch.save(result, "model_preprocessor/test.pt")
-
-        if result:
-            print("✅ Processing Successful!")
-            print("Vision Face Shape:", result['vision_face'].shape)
-            print("Vision Features Shape:", result['vision_behaviour'].shape)
-            print("Audio Wave Shape:", result['audio_wave'].shape)
-            print("Audio Mel Shape:", result['audio_mel'].shape)
-    else:
-        print("ℹ️ To test, place a video file named 'test_video.mp4' in this directory.")
