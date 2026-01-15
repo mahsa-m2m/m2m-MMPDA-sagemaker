@@ -159,10 +159,9 @@ def split_video_precise(input_path, output_dir, chunk_size_sec):
             '-analyzeduration', '10M',
             '-probesize', '10M',
             '-i', input_path,
-            '-pix_fmt', 'yuv420p',
-            '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23',
-            '-c:a', 'aac',
-            output_file
+            '-c', 'copy',           
+            '-map', '0',            
+            output_file             
         ]
 
     # CASE 2: The video needs splitting
@@ -175,19 +174,16 @@ def split_video_precise(input_path, output_dir, chunk_size_sec):
             '-analyzeduration', '10M',
             '-probesize', '10M',
             '-i', input_path,
-            '-pix_fmt', 'yuv420p',
-            '-c:v', 'libx264',
-            '-preset', 'veryfast',
-            '-crf', '23',
-            '-c:a', 'aac',
-            '-f', 'segment',
-            '-reset_timestamps', '1',
+            '-c', 'copy',             
+            '-map', '0',              
+            '-f', 'segment',          
+            '-reset_timestamps', '1', 
         ]
 
         if split_points:
             times_str = ",".join(map(str, split_points))
             cmd.extend(['-segment_times', times_str])
-            cmd.extend(['-force_key_frames', times_str])
+            # cmd.extend(['-force_key_frames', times_str])
         
         cmd.append(output_pattern)
 

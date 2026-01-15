@@ -10,7 +10,7 @@ event = {
     "sessionId": "test-session-001",
     "chunkId": "chunk_34",
     "fileType": "video",
-    "s3Input": "s3://deception-detection-bucket/dataset/video/deceptive/TTTT_1107_class_Deceptive_50.mkv", 
+    "s3Input": "s3://deception-detection-bucket/results/test-session-01/video/BM024_4PL-chunk0.mp4", 
     "extractAudio": True,
     "resize": {"height": 224, "width": 224}
 }

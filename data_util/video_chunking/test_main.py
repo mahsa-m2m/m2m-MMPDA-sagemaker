@@ -1,30 +1,29 @@
-# test_script.py
 import json
 import boto3
-from video_splitter import lambda_handler  # Import your function
+import logging
+import sys
+
+from main import video_chunking 
+
+logging.basicConfig(level=logging.INFO, force=True)
 
 # Initialize S3 client
 s3_client = boto3.client('s3')
 
 # Define a Mock Event
 test_event = {
-  "sessionId": "test-session-001",
+  "sessionId": "test-session-01",
   "fileType": "video",
   "s3Input": "s3://deception-detection-bucket/dataset/video/deceptive/BM024_4PL.wmv", 
   "chunkSizeSeconds": 10,
   "metadata": {}
 }
 
-# Define a Mock Context 
-class MockContext:
-    function_name = "test_function"
-    memory_limit_in_mb = 128
-    aws_request_id = "test-id-123"
-
 # Run the Handler
 try:
-    print("--- STARTING TEST ---")
-    result = lambda_handler(test_event, MockContext())
+    print("\n--- STARTING TEST ---")
+    
+    result = video_chunking(test_event)
     
     print("\n--- RESULT ---")
     print(json.dumps(result, indent=2))
@@ -39,38 +38,17 @@ try:
             print(f"\nChunk {idx}: {chunk_uri}")
             
             # Parse S3 URI to get bucket and key
-            bucket = chunk_uri.split('/')[2]
-            key = '/'.join(chunk_uri.split('/')[3:])
+            bucket = chunk_uri.replace("s3://", "").split("/")[0]
+            key = chunk_uri.replace(f"s3://{bucket}/", "")
             
             # Get file size
             try:
                 response = s3_client.head_object(Bucket=bucket, Key=key)
                 size_mb = response['ContentLength'] / (1024 * 1024)
                 print(f"  - Size: {size_mb:.2f} MB")
-                print(f"  - Content-Type: {response.get('ContentType', 'N/A')}")
             except Exception as e:
                 print(f"  - Could not retrieve metadata: {e}")
-        
-        # Download chunks locally
-        print("\n--- DOWNLOAD OPTIONS ---")
-        download = input("Download chunks to local directory? (y/n): ").lower()
-        
-        if download == 'y':
-            import os
-            download_dir = './downloaded_chunks'
-            os.makedirs(download_dir, exist_ok=True)
-            
-            for idx, chunk_uri in enumerate(result['videoChunks'], 1):
-                bucket = chunk_uri.split('/')[2]
-                key = '/'.join(chunk_uri.split('/')[3:])
-                local_filename = os.path.join(download_dir, os.path.basename(key))
-                
-                print(f"Downloading chunk {idx}...")
-                s3_client.download_file(bucket, key, local_filename)
-                print(f"  - Saved to: {local_filename}")
-            
-            print(f"\n✓ All chunks downloaded to: {download_dir}")
-    
+
     elif result.get('status') == 'failed':
         print("\n--- PROCESSING FAILED ---")
         print(f"Error: {result.get('error')}")

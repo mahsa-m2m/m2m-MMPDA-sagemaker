@@ -10,7 +10,7 @@ event = {
     "sessionId": "test-session-002",
     "fileType": "tensor",
     "chunkId": "chunk_01",
-    "s3InputTensor": "s3://deception-detection-bucket/dataset/video/precomputed_features/test/TTTT_1016_class_Truth_19.pt",
+    "s3InputTensor": "s3://deception-detection-bucket/test-session-001/video/chunk_34/feature.pt",
     "modelVersion": "video-model-v1.0",
     "metadata": {
         "originalResolution": {"width": 0, "height": 0},
