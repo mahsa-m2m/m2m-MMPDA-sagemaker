@@ -87,50 +87,38 @@ def process_fusion_request(video_response, audio_response=None):
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
-# --- Usage Example ---
-if __name__ == "__main__":    
+# # --- Usage ---
+# if __name__ == "__main__":    
         
-    video_response = {
-        "sessionId": "session_123",
-        "fileType": "video",
-        "chunkId": "chunk_01",
-        "s3Output": "s3://deceptive-detection-bucket/results",
-        "status": "success",
-        "metadata": { 
-            "originalResolution": {"width": 1920, "height": 1080},
-            "numFrames": 64,
-            "prediction": "0", # Truthful
-            "confidence": 0.60,
-            "durationSeconds": 10 
-        }
-    }
+#     video_response = {
+#         "sessionId": "session_123",
+#         "fileType": "video",
+#         "chunkId": "chunk_01",
+#         "s3Output": "s3://deceptive-detection-bucket/results",
+#         "status": "success",
+#         "metadata": { 
+#             "originalResolution": {"width": 1920, "height": 1080},
+#             "numFrames": 64,
+#             "prediction": "0", # Truthful
+#             "confidence": 0.60,
+#             "durationSeconds": 10 
+#         }
+#     }
 
-    audio_response = {
-        "sessionId": "session_123",
-        "fileType": "audio",
-        "chunkId": "chunk_01",
-        "s3Output": "s3://deceptive-detection-bucket/results",
-        "status": "success",
-        "metadata": { 
-            "prediction": "1",      # Deceptive
-            "confidence": 0.95,
-            "durationSeconds": 10 
-        }
-    }
+#     audio_response = {
+#         "sessionId": "session_123",
+#         "fileType": "audio",
+#         "chunkId": "chunk_01",
+#         "s3Output": "s3://deceptive-detection-bucket/results",
+#         "status": "success",
+#         "metadata": { 
+#             "prediction": "1",      # Deceptive
+#             "confidence": 0.95,
+#             "durationSeconds": 10 
+#         }
+#     }
 
-    print("Running Fusion Process...")
-    final_report = process_fusion_request(video_response, audio_response)
+#     print("Running Fusion Process...")
+#     final_report = process_fusion_request(video_response, audio_response)
 
-    print(final_report)
-    # print(json.dumps(final_report, indent=2))
-
-#  {
-#             "sessionId": video_response.get('sessionId'),
-#             "primaryModality": primary, # "video" or "audio"
-#             "chunkId": video_response.get('chunkId'),
-#             "s3Output": video_response.get('s3Output'), 
-#             "status": "success",
-#             "metadata": {
-#                 "prediction": str(result["label_index"]), 
-#                 "confidence": result["confidence"]
-#  }
+#     print(final_report)
