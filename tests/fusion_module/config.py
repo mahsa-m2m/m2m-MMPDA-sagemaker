@@ -7,6 +7,6 @@ CLASS_LABELS = {
 # FUSION WEIGHTS
 # How much trust to place in each model.
 FUSION_WEIGHTS = {
-    "video": 0.4,
-    "audio": 0.6
+    "video": 0.8,
+    "audio": 0.2
 }

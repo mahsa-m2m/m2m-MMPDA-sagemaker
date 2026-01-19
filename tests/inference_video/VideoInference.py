@@ -209,9 +209,9 @@ class FusionInference:
                 vision_behaviour = batch_data['vision_behaviour'].to(config.DEVICE)
                 vision_face = batch_data['vision_face'].to(config.DEVICE)
 
-                print("===============")
-                print(batch_data['audio_mel'].shape)
-                print(batch_data['audio_wave'].shape)
+                # print("===============")
+                # print(batch_data['audio_mel'].shape)
+                # print(batch_data['audio_wave'].shape)
 
                 paths = batch_data['feature_path']
 
