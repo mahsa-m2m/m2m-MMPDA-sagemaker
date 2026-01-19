@@ -4,22 +4,31 @@ import json
 import torch
 import joblib
 import numpy as np
+import boto3
+import tempfile
 
 
 LOCAL_CONFIG = {
+    
+    "s3_input_pt_url": "s3://deception-detection-bucket/dataset/video/precomputed_features/test/BF006_3NT.pt", 
     # Audio Files
     "audio_model_path":  "/home/sagemaker-user/mahsa-m2m-MMPDA-sagemaker/tests/inference_audio/audio_model.pth",  
     "audio_scaler_path": "/home/sagemaker-user/mahsa-m2m-MMPDA-sagemaker/tests/inference_audio/scaler.pkl",       
     "audio_input_json":  "embeddings.json",
     
     # Video Files
-    "video_input_pt":    "/home/sagemaker-user/mahsa-m2m-MMPDA-sagemaker/tests/inference_video/feature.pt"    
+    "video_input_pt":    "s3://deception-detection-bucket/test-session-01/video/chunk_001/feature.pt"    
+    # "use_same_pt_for_video": True
 }
 
 current_dir = os.getcwd()
 sys.path.append(os.path.join(current_dir, 'inference_audio'))
 sys.path.append(os.path.join(current_dir, 'inference_video'))
 sys.path.append(os.path.join(current_dir, 'fusion_module'))
+sys.path.append(os.path.join(current_dir, 'preprocessor_audio')) 
+
+
+from preprocessor_audio.preprocessor import AudioFeatureExtractor, get_feature_extractor
 
 from inference_audio.main import BiLSTMAttentionModel, predict as predict_audio
 
@@ -28,6 +37,10 @@ import inference_video.config as video_config
 
 
 from fusion_module.main import process_fusion_request
+
+def parse_s3_path(s3_path: str):
+    parts = s3_path.replace("s3://", "").split("/", 1)
+    return parts[0], parts[1]
 
 # LOAD AUDIO MODEL LOCALLY
 def load_audio_model_local(model_path, scaler_path):
@@ -61,8 +74,26 @@ def load_audio_model_local(model_path, scaler_path):
 def run_local_test():
     print("=== STARTING LOCAL INTEGRATION TEST ===\n")
 
+    s3_client = boto3.client('s3')
+    local_pt_path = None
 
-    # VIDEO INFERENCE
+    try:
+        print("--- Downloading Input Data ---")
+        bucket, key = parse_s3_path(LOCAL_CONFIG["video_input_pt"])
+        
+        with tempfile.NamedTemporaryFile(suffix='.pt', delete=False) as tmp:
+            print(f"   -> Downloading from {LOCAL_CONFIG['video_input_pt']}...")
+            s3_client.download_file(bucket, key, tmp.name)
+            local_pt_path = tmp.name
+        
+        print(f"   -> Downloaded to: {local_pt_path}")
+
+        pt_data = torch.load(local_pt_path)
+        print(f"   -> Keys found in .pt: {list(pt_data.keys())}")
+    except Exception as e:
+            print(f"\n❌ Test Failed: {e}")
+
+    ######### VIDEO INFERENCE
     print("\n--- [2] Running Video Module (Local) ---")
     video_response_mock = None
     try:
@@ -71,11 +102,11 @@ def run_local_test():
         video_engine = get_inference_engine()
 
         # Run Prediction on Local File
-        video_path = LOCAL_CONFIG["video_input_pt"]
+        video_path = local_pt_path #LOCAL_CONFIG["video_input_pt"]
         print(f"   -> Processing File: {video_path}")
-        
-        if not os.path.exists(video_path):
-            raise FileNotFoundError(f"Video input not found at {video_path}")
+        # print(video_path)
+        # if not os.path.exists(video_path):
+        #     raise FileNotFoundError(f"Video input not found at {video_path}")
 
         batch_results = video_engine.predict_batch_silent(
             [video_path], 
@@ -112,7 +143,7 @@ def run_local_test():
         print(f"   ❌ Video Failed: {e}")
         return
 
-    # AUDIO INFERENCE
+    ######### AUDIO INFERENCE
     print("--- [1] Running Audio Module (Local) ---")
     audio_response_mock = None
     try:
@@ -122,12 +153,37 @@ def run_local_test():
             LOCAL_CONFIG["audio_scaler_path"]
         )
 
-        # Read Local Input File
-        print(f"   -> Reading Input: {LOCAL_CONFIG['audio_input_json']}")
-        with open(LOCAL_CONFIG["audio_input_json"], 'r') as f:
-            data = json.load(f)
-            features = np.array(data['features'])
-            print(features.shape)
+        # PREPROCESSING: Load .pt file and Extract Features
+        # We use the same .pt file defined in LOCAL_CONFIG["video_input_pt"]
+        # pt_file_path = LOCAL_CONFIG["video_input_pt"]
+        print(f"   -> Reading Input .pt file: {video_path}")
+        
+        if not os.path.exists(video_path):
+            raise FileNotFoundError(f"Input file not found at {video_path}")
+
+        # Load dictionary from .pt
+        pt_data = torch.load(video_path)
+        
+        if 'audio_wave' not in pt_data:
+            raise KeyError(f"The file {video_path} does not contain the key 'audio_wave'")
+
+        raw_audio_tensor = pt_data['audio_wave']
+        print(f"   -> Found raw audio tensor: {raw_audio_tensor.shape}")
+
+        # Initialize Preprocessor
+        print("   -> Initializing Audio Preprocessor...")
+        extractor = get_feature_extractor()
+        
+        # Extract features (Pass the tensor directly)
+        features = extractor.extract(raw_audio_tensor)
+        print(f"   -> Features Extracted. Shape: {features.shape}")
+
+        # # Read Local Input File
+        # print(f"   -> Reading Input: {LOCAL_CONFIG['audio_input_json']}")
+        # with open(LOCAL_CONFIG["audio_input_json"], 'r') as f:
+        #     data = json.load(f)
+        #     features = np.array(data['features'])
+        #     print(features.shape)
 
         # Predict
         prediction, confidence = predict_audio(model, scaler, features)
@@ -147,7 +203,9 @@ def run_local_test():
     except Exception as e:
         print(f"   ❌ Audio Failed: {e}")
         return
-    # FUSION
+    
+    
+    ######## FUSION
     print("\n--- [3] Running Fusion Module (Local) ---")
     try:
         final_report = process_fusion_request(
