@@ -1,71 +1,137 @@
+#!/usr/bin/env python3
+import os
+import json
+import sys
 import boto3
 import filetype
 
-# Initialize S3 client 
-s3_client = boto3.client('s3')
+class ModalityDetectionError(Exception):
+    pass
 
-def get_modality(file_header_bytes):
-    """
-    Determines if content is Video, Audio, or Text using pure python methods.
-    """
-    # Guess the file type using binary signatures
-    kind = filetype.guess(file_header_bytes)
+class S3ReadError(Exception):
+    pass
 
-    if kind:
-        mime = kind.mime
-        print(f"Detected MIME: {mime}")
-        
-        if mime.startswith('video'):
-            return 'video'
-        if mime.startswith('audio'):
-            return 'audio'
-        if mime == 'application/pdf':
-            return 'text'
+def parse_s3_path(s3_path: str) -> tuple:
+    """Splits s3://bucket/key into bucket and key."""
+    parts = s3_path.replace("s3://", "").split("/", 1)
+    return parts[0], parts[1]
 
-    # If 'filetype' returns None, it might be a plain text file (.txt, .csv)
-    #    Plain text files do not have magic headers, so we check if they are readable text.
-    try:
-        file_header_bytes.decode('utf-8')
-        return 'text'
-    except UnicodeDecodeError:
+class ModalityDetector:
+    def __init__(self):
         pass
+    
+    def detect(self, file_header_bytes: bytes) -> str:
+        """
+        Determines if content is Video, Audio, or Text using pure python methods.
+        """
+        # Guess the file type using binary signatures
+        kind = filetype.guess(file_header_bytes)
 
-    return 'unknown'
+        if kind:
+            mime = kind.mime
+            print(f"Detected MIME: {mime}")
+            
+            if mime.startswith('video'): return 'video'
+            if mime.startswith('audio'): return 'audio'
+            if mime == 'application/pdf': return 'text'
 
-def lambda_handler(event, context):
+        # If 'filetype' returns None, it might be a plain text file (.txt, .csv)
+        try:
+            file_header_bytes.decode('utf-8')
+            return 'text'
+        except UnicodeDecodeError:
+            pass
+
+        return 'unknown'
+
+def main():
+    s3_client = boto3.client('s3')
+    
+    # Environment Variables
+    session_id = os.environ.get("SESSION_ID", "unknown")
+    s3_input = os.environ.get("S3_INPUT", "")
+    
     try:
-        # Parse S3 event
-        bucket_name = event['Records'][0]['s3']['bucket']['name']
-        file_key = event['Records'][0]['s3']['object']['key']
+        # Input Validation
+        if not s3_input:
+            raise ModalityDetectionError("Missing S3_INPUT")
         
-        print(f"Checking file: {file_key}")
-
-        # Download only the first 2KB
-        response = s3_client.get_object(
-            Bucket=bucket_name, 
-            Key=file_key, 
-            Range='bytes=0-2047'
-        )
-        file_header = response['Body'].read()
+        input_bucket, input_key = parse_s3_path(s3_input)
         
-        # Determine Modality
-        modality = get_modality(file_header)
+        # We don't download the whole file to temp, only requires the first 2KB. 
+        try:
+            response = s3_client.get_object(
+                Bucket=input_bucket, 
+                Key=input_key, 
+                Range='bytes=0-2047'
+            )
+            file_header = response['Body'].read()
+        except Exception as e:
+            raise S3ReadError(f"Failed to read file header from S3: {str(e)}")
+            
+        # Execute Domain Logic
+        try:
+            detector = ModalityDetector()
+            modality = detector.detect(file_header)
+            
+            if modality == 'unknown': ## FATAL ERROR - INPUT IS NOT VALID
+                pass
+                
+        except Exception as e:
+            raise ModalityDetectionError(f"Failed to analyze file bytes: {str(e)}")
         
-        print(f"FINAL DECISION: {modality}")
-        
-        return {
-            'statusCode': 200,
-            'body': modality
+        # Construct Success Output
+        output_data = {
+            "sessionId": session_id,
+            "s3Input": s3_input,
+            "detectedModality": modality, 
+            "status": "success",
+            "metadata": {
+                "mimeType": filetype.guess(file_header).mime if filetype.guess(file_header) else "text/plain"
+            },
+            "error": None
         }
+        
+        # stdout
+        print(json.dumps(output_data))
+        sys.exit(0)
+        
+    # Error Handling
+    except ModalityDetectionError as e:
+        output_data = {
+            "sessionId": session_id,
+            "s3Input": s3_input,
+            "detectedModality": "unknown",
+            "status": "failed",
+            "metadata": {},
+            "error": str(e)
+        }
+        print(json.dumps(output_data), file=sys.stderr)
+        sys.exit(1)
+
+    except S3ReadError as e:
+        output_data = {
+            "sessionId": session_id,
+            "s3Input": s3_input,
+            "detectedModality": "unknown",
+            "status": "failed",
+            "metadata": {},
+            "error": str(e)
+        }
+        print(json.dumps(output_data), file=sys.stderr)
+        sys.exit(1)
 
     except Exception as e:
-        print(f"Error: {e}")
-        return {'statusCode': 500, 'body': str(e)}
-
+        output_data = {
+            "sessionId": session_id,
+            "s3Input": s3_input,
+            "detectedModality": "unknown",
+            "status": "failed",
+            "metadata": {},
+            "error": f"UnhandledException: {str(e)}"
+        }
+        print(json.dumps(output_data), file=sys.stderr)
+        sys.exit(1)
 
 if __name__ == "__main__":
-    
-    # Test
-    with open("/home/sagemaker-user/mahsa-m2m-MMPDA-sagemaker/sample/feat/train/trial_lie_033.pt", "rb") as f:
-        print(f"Test.txt detected as: {get_modality(f.read(2048))}")
- 
+    main()
