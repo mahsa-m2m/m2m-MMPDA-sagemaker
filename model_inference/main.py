@@ -29,11 +29,12 @@ inference_engine = None
 def get_inference_engine():
     global inference_engine
     if inference_engine is None:
-        if config.MODEL_WEIGHTS_PATH.startswith("s3://"):
-            logger.info(f"Found S3 model path: {config.MODEL_WEIGHTS_PATH}")
+        model_path_s3 = os.environ.get("MODEL_WEIGHTS_PATH", "s3://coyote-deception-detection-platform/models/video/2025-12-19-15-46-02-390.pt")
+        if model_path_s3.startswith("s3://"):
+            logger.info(f"Found S3 model path: {model_path_s3}")
             try:
                 s3_client = boto3.client('s3')
-                bucket, key = parse_s3_path(config.MODEL_WEIGHTS_PATH)
+                bucket, key = parse_s3_path(model_path_s3)
                 
                 local_model_path = "/tmp/video_model.pth"
                 
