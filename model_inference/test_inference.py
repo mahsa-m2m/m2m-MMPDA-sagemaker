@@ -14,7 +14,7 @@ test_event = {
   "sessionId": "test-session-inference-01",
   "chunkId": "chunk_001",  
   "fileType": "video",
-  "s3InputTensor": "s3://deception-detection-bucket/test-session-local-01/video/chunk_001/feature.pt", 
+  "s3InputTensor": "s3://deception-detection-bucket/test-session-01/video/chunk_001/feature.pt", 
   "metadata": {}
 }
 

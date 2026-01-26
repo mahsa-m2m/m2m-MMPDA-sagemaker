@@ -29,9 +29,30 @@ inference_engine = None
 def get_inference_engine():
     global inference_engine
     if inference_engine is None:
+        if config.MODEL_WEIGHTS_PATH.startswith("s3://"):
+            logger.info(f"Found S3 model path: {config.MODEL_WEIGHTS_PATH}")
+            try:
+                s3_client = boto3.client('s3')
+                bucket, key = parse_s3_path(config.MODEL_WEIGHTS_PATH)
+                
+                local_model_path = "/tmp/video_model.pth"
+                
+                logger.info(f"Downloading model from bucket: {bucket}, key: {key}")
+                s3_client.download_file(bucket, key, local_model_path)
+                
+                config.MODEL_WEIGHTS_PATH = local_model_path
+                logger.info(f"Model successfully downloaded to {local_model_path}")
+                
+            except Exception as e:
+                logger.critical(f"Failed to download model from S3: {e}")
+                raise e
         logger.info("Initializing FusionInference Engine...")
         inference_engine = FusionInference()
     return inference_engine
+
+    #     logger.info("Initializing FusionInference Engine...")
+    #     inference_engine = FusionInference()
+    # return inference_engine
 
 def process_inference_task(event: Dict[str, Any]) -> Dict[str, Any]:
     logger.info("Starting inference task")
