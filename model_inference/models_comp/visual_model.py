@@ -4,11 +4,14 @@ import torchvision
 
 from torch.autograd import Variable
 import torchvision.models as models
+import config
+
 
 class ResNet18_face_LSTM(nn.Module):
 
     def __init__(self, pretrained=True, bidirectional=True):
         super(ResNet18_face_LSTM, self).__init__()
+
         resnet = models.resnet18(pretrained=pretrained)
 
         self.num_ftrs = resnet.fc.in_features
@@ -305,7 +308,12 @@ class ResNet18_LSTM(nn.Module):
 
     def __init__(self, pretrained=True, LSTM_layers=1):
         super(ResNet18_LSTM, self).__init__()
-        resnet = models.resnet18(pretrained=pretrained)
+        resnet = models.resnet18(pretrained=False)
+        
+        if pretrained:
+            print(f"Loading local weights from: {config.RESNET18_LSTM_PATH}")
+            state_dict = torch.load(config.RESNET18_LSTM_PATH, map_location=config.DEVICE) 
+            resnet.load_state_dict(state_dict)
 
         self.num_ftrs = resnet.fc.in_features
 

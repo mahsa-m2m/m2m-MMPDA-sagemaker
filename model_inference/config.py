@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 # --- PATHS ---
 MODEL_WEIGHTS_PATH = "2025-12-19-15-46-02-390.pt"
+RESNET18_LSTM_PATH = "resnet18_lstm.pth"
 
 DEVICE = "cuda" if os.getenv("USE_GPU", "false").lower() == "true" else "cpu"
 NUM_WORKERS = 0
