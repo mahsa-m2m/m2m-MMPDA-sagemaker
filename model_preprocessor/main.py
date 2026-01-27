@@ -35,6 +35,24 @@ def get_preprocessing_engine():
     if preprocessing_engine is None:
         logger.info("Initializing VideoFeatureExtractor...")
         try:
+            face_landmark_path = os.environ.get("FACE_LANDMARK_PATH", "s3://coyote-deception-detection-platform/models/video/face_landmarker.task")
+            if face_landmark_path.startswith("s3://"):
+                logger.info(f"Found S3 face model path: {face_landmark_path}")
+                try:
+                    s3_client = boto3.client('s3')
+                    bucket, key = parse_s3_path(face_landmark_path)
+                    
+                    local_model_path = "/tmp/face_landmark_model.pth"
+                    
+                    logger.info(f"Downloading model from bucket: {bucket}, key: {key}")
+                    s3_client.download_file(bucket, key, local_model_path)
+                    
+                    config.FACE_LANDMARK_PATH = local_model_path
+                    logger.info(f"Face Model successfully downloaded to {local_model_path}")
+                    
+                except Exception as e:
+                    logger.critical(f"Failed to download face model from S3: {e}")
+                    raise e
             preprocessing_engine = VideoFeatureExtractor()
         except Exception as e:
             logger.error(f"Failed to initialize engine: {str(e)}")

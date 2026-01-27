@@ -34,21 +34,21 @@ class VideoFeatureExtractor:
         logger.info("VideoFeatureExtractor initialized successfully")
 
     def _ensure_model_exists(self):
-        """Checks for the MediaPipe task file and downloads it if missing."""
+        """Checks for the MediaPipe task file."""
         if not os.path.exists(self.model_path):
-            logger.info(f"Downloading MediaPipe model to {self.model_path}...")
-            url = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task"
-            try:
-                subprocess.check_call(["wget", "-O", self.model_path, url], stdout=subprocess.DEVNULL)
-            except Exception as e:
-                try:
-                    import requests
-                    response = requests.get(url)
-                    with open(self.model_path, 'wb') as f:
-                        f.write(response.content)
-                except Exception as req_e:
-                    logger.error(f"Failed to download MediaPipe model: {str(req_e)}")
-                    raise VideoPreprocessError(f"Failed to download model: {str(req_e)}")
+            logger.info(f"Face Model not found in: {self.model_path}...")
+            # url = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task"
+            # try:
+            #     subprocess.check_call(["wget", "-O", self.model_path, url], stdout=subprocess.DEVNULL)
+            # except Exception as e:
+            #     try:
+            #         import requests
+            #         response = requests.get(url)
+            #         with open(self.model_path, 'wb') as f:
+            #             f.write(response.content)
+            #     except Exception as req_e:
+            #         logger.error(f"Failed to download MediaPipe model: {str(req_e)}")
+            #         raise VideoPreprocessError(f"Failed to download model: {str(req_e)}")
 
     def _get_mediapipe_features(self, blendshapes, matrix):
         """Maps MP output to the 50-dim feature vector."""

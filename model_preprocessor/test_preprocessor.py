@@ -15,7 +15,7 @@ test_event = {
   "sessionId": "test-session-01",
   "chunkId": "chunk_001",  
   "fileType": "video",
-  "s3Input": "s3://deception-detection-bucket/results/test-session-01/video/BM024_4PL-chunk0.mp4", 
+  "s3Input": "s3://deception-detection-bucket/dataset/video/deceptive/TTTT_10_class_Deceptive_54.mkv", 
   "extractAudio": True
 }
 
