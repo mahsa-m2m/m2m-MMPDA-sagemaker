@@ -29,9 +29,52 @@ inference_engine = None
 def get_inference_engine():
     global inference_engine
     if inference_engine is None:
+        
+        model_path_s3 = os.environ.get("MODEL_WEIGHTS_PATH", "s3://coyote-deception-detection-platform/models/video/2025-12-19-15-46-02-390.pt")
+        if model_path_s3.startswith("s3://"):
+            logger.info(f"Found S3 model path: {model_path_s3}")
+            try:
+                s3_client = boto3.client('s3')
+                bucket, key = parse_s3_path(model_path_s3)
+                
+                local_model_path = "/tmp/video_model.pth"
+                
+                logger.info(f"Downloading model from bucket: {bucket}, key: {key}")
+                s3_client.download_file(bucket, key, local_model_path)
+                
+                config.MODEL_WEIGHTS_PATH = local_model_path
+                logger.info(f"Model successfully downloaded to {local_model_path}")
+                
+            except Exception as e:
+                logger.critical(f"Failed to download model from S3: {e}")
+                raise e
+        
+        resnet_path_s3 = os.environ.get("RESNET_LSTM_PATH", "s3://coyote-deception-detection-platform/models/video/resnet18-f37072fd.pth")
+        if resnet_path_s3.startswith("s3://"):
+            logger.info(f"Found S3 ResNet path: {resnet_path_s3}")
+            try:
+                bucket_res, key_res = parse_s3_path(resnet_path_s3)
+                local_resnet_path = "/tmp/resnet18_lstm.pth"
+                
+                # Check if already exists
+                if not os.path.exists(local_resnet_path):
+                    logger.info(f"Downloading ResNet from bucket: {bucket_res}, key: {key_res}")
+                    s3_client.download_file(bucket_res, key_res, local_resnet_path)
+                
+                config.RESNET18_LSTM_PATH = local_resnet_path
+                logger.info(f"ResNet successfully configured at {local_resnet_path}")
+
+            except Exception as e:
+                logger.critical(f"Failed to download ResNet from S3: {e}")
+                raise e
+        
         logger.info("Initializing FusionInference Engine...")
         inference_engine = FusionInference()
     return inference_engine
+
+    #     logger.info("Initializing FusionInference Engine...")
+    #     inference_engine = FusionInference()
+    # return inference_engine
 
 def process_inference_task(event: Dict[str, Any]) -> Dict[str, Any]:
     logger.info("Starting inference task")
