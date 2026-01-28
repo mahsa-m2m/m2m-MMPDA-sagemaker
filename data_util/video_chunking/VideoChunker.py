@@ -139,15 +139,15 @@ class VideoChunker:
             '-probesize', '10M',
             '-i', input_path,
             '-c', 'copy',             
-            '-map', '0',              
-            '-f', 'segment',          
-            '-reset_timestamps', '1', 
+            '-map', '0'              
+            # '-f', 'segment',          
+            # '-reset_timestamps', '1', 
         ]
 
-        if not split_points and total_duration <= chunk_size_sec:
+        if not split_points: #and total_duration <= chunk_size_sec:
             # ---- Single file (No splitting needed)
             logger.info("Video shorter than chunk size, processing as single file")
-            output_file = os.path.join(output_dir, f"{filename}-chunk00{extension}")
+            output_file = os.path.join(output_dir, f"{filename}-chunk0{extension}")
             cmd.append(output_file)
         else:
             # ---- Multiple segments

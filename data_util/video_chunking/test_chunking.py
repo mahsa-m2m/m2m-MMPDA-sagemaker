@@ -14,7 +14,7 @@ s3_client = boto3.client('s3')
 test_event = {
   "sessionId": "test-session-01",
   "fileType": "video",
-  "s3Input": "s3://deception-detection-bucket/dataset/video/deceptive/BM024_4PL.wmv", 
+  "s3Input": "s3://deception-detection-bucket/dataset/video/truthful/TTTT_104_class_Truth_47.mkv", 
   "chunkSizeSeconds": 10,
   "metadata": {}
 }
