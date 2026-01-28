@@ -1,5 +1,18 @@
 import json
-import datetime
+from datetime import datetime, timezone
+import os             
+import logging        
+import boto3
+from botocore.exceptions import ClientError 
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+s3_client = boto3.client("s3")
+ddb_client = boto3.client("dynamodb")
+
+TABLE_NAME = os.environ.get("TABLE_NAME", "UploadSessions")
+REPORT_BUCKET = os.environ.get("REPORT_BUCKET", "deception-detection-reports")
 
 class DeceptionReportGenerator:
     def __init__(self, case_id, file_name):
@@ -14,40 +27,44 @@ class DeceptionReportGenerator:
         """
         Parses the input.
         """
-        # Extract Metadata from API Response
-        self.modality = api_response.get('fileType', 'Text').capitalize()
-        metadata = api_response.get('metadata', {}) 
-        
-        token_count = metadata.get('tokenCount', self.chunk_size)
-        
-        # Extract Prediction
-        raw_prediction = str(metadata.get('prediction', '0'))
-        confidence = float(metadata.get('confidence', 0.0))
-        
-        # Logic for Label Mapping (1=Deceptive, 0=Truthful)
-        if raw_prediction == '1':
-            pred_label = 'DECEPTIVE'
-        else:
-            pred_label = 'TRUTHFUL'
 
-        # UNCERTAIN label logic
-        if confidence < 0.60:
-            pred_label = 'UNCERTAIN'
+        try:
+            # Extract Metadata from API Response
+            self.modality = api_response.get('fileType', 'Text').capitalize()
+            metadata = api_response.get('metadata', {}) 
+            
+            token_count = metadata.get('tokenCount', self.chunk_size)
+            
+            # Extract Prediction
+            raw_prediction = str(metadata.get('prediction', '0'))
+            confidence = float(metadata.get('confidence', 0.0))
+            
+            # Logic for Label Mapping (1=Deceptive, 0=Truthful)
+            if raw_prediction == '1':
+                pred_label = 'DECEPTIVE'
+            else:
+                pred_label = 'TRUTHFUL'
 
-        # Calculate token range for the chunk
-        start_token = self.total_tokens
-        end_token = self.total_tokens + token_count
-        self.total_tokens += token_count # Increment total
+            # UNCERTAIN label logic
+            if confidence < 0.60:
+                pred_label = 'UNCERTAIN'
 
-        # Store processed chunk data
-        self.chunks.append({
-            # Using numerical index
-            'chunk_id': len(self.chunks) + 1, 
-            'start_token': start_token,
-            'end_token': end_token,
-            'label': pred_label.upper(),
-            'score': confidence
-        })
+            # Calculate token range for the chunk
+            start_token = self.total_tokens
+            end_token = self.total_tokens + token_count
+            self.total_tokens += token_count # Increment total
+
+            # Store processed chunk data
+            self.chunks.append({
+                # Using numerical index
+                'chunk_id': len(self.chunks) + 1, 
+                'start_token': start_token,
+                'end_token': end_token,
+                'label': pred_label.upper(),
+                'score': confidence
+            })
+        except Exception as e:
+            logger.error(f"Error parsing chunk {api_response.get('chunkId', 'unknown')}: {str(e)}")
 
     def generate(self):
         # Sort chunks
@@ -74,7 +91,9 @@ class DeceptionReportGenerator:
 
         # Build Text Report
         lines = []
-        curr_date = datetime.date.today().strftime("%B %d, %Y")
+        # curr_date = datetime.date.today().strftime("%B %d, %Y")
+        curr_date = datetime.now(timezone.utc).strftime("%B %d, %Y")
+
         
         # HEADER
         lines.append("Deception Analysis Report")
@@ -169,70 +188,131 @@ class DeceptionReportGenerator:
         
         return "\n".join(lines)
 
-# ==========================================
-# TEST
-# ==========================================
 
-# Text Response 1 (Truthful)
-text_response_01 = {
-  "sessionId": "session_text_001",
-  "fileType": "text",
-  "s3Output": "s3://results/session/text/text_inference.json",
-  "status": "success",
-  "metadata": {"confidence": 0.92, "prediction": 0, "tokenCount": 350}, # 0 = Truthful
-  "error": None
-}
+def save_to_s3(session_id, report_content):
+    key = f"reports/{session_id}/analysis.txt"
+    s3_client.put_object(Bucket=REPORT_BUCKET, Key=key, Body=report_content)
+    return key
 
-# Text Response 2 (Truthful)
-text_response_02 = {
-  "sessionId": "session_text_001",
-  "fileType": "text",
-   "s3Output": "s3://results/session/text/text_inference.json",
-  "status": "success",
-  "metadata": {"confidence": 0.89, "prediction": 0, "tokenCount": 350}
-}
 
-# Text Response 3 (Truthful)
-text_response_03 = {
-  "sessionId": "session_text_001",
-  "fileType": "text",
-  "s3Output": "s3://results/session/text/text_inference.json",
-  "status": "success",
-  "metadata": {"confidence": 0.85, "prediction": 0, "tokenCount": 350}
-}
+def lambda_handler(event, context):
+    try:
+        logger.info(f"Received event: {json.dumps(event)}")
+        
+        session_id = event.get('session_id')
+        file_name = event.get('file_name', 'unknown')
+        
+        # a list of chunks to be passed in the event
+        chunk_results = event.get('chunk_results', [])
+        
+        if not session_id:
+            raise ValueError("session_id is missing from event")
 
-# Text Response 4 (Uncertain)
-text_response_04 = {
-  "sessionId": "session_text_001",
-  "fileType": "text",
-  "status": "success",
-  "metadata": {"confidence": 0.55, "prediction": 1, "tokenCount": 230} 
-}
+        report_gen = DeceptionReportGenerator(case_id=session_id, file_name=file_name)
 
-# # Text Response 5 (Deceptive)
-# text_response_05 = {
+        # Process chunks
+        for chunk in chunk_results:
+            report_gen.add_chunk(chunk)
+
+        # Generate string
+        report_text = report_gen.generate()
+        
+        # save to S3
+        saved_key = save_to_s3(session_id, report_text)
+        logger.info(f"Report saved to {saved_key}")
+
+        # Update DynamoDB
+        ddb_client.update_item(
+            TableName=TABLE_NAME,
+            Key={"session_id": {"S": session_id}},
+            UpdateExpression="SET #status = :s, report_key = :rk",
+            ExpressionAttributeNames={"#status": "status"},
+            ExpressionAttributeValues={
+                ":s": {"S": "COMPLETED"},
+                ":rk": {"S": saved_key}
+            }
+        )
+
+        # JSON response
+        return {
+            "statusCode": 200,
+            "body": json.dumps({
+                "message": "Report generated",
+                "report_s3_key": saved_key
+            })
+        }
+
+    except Exception as e:
+        logger.error(f"Lambda failed: {str(e)}", exc_info=True)
+        return {
+            "statusCode": 500,
+            "body": json.dumps({"error": str(e)})
+        }
+
+# # ==========================================
+# # TEST
+# # ==========================================
+
+# # Text Response 1 (Truthful)
+# text_response_01 = {
+#   "sessionId": "session_text_001",
+#   "fileType": "text",
+#   "s3Output": "s3://results/session/text/text_inference.json",
+#   "status": "success",
+#   "metadata": {"confidence": 0.92, "prediction": 0, "tokenCount": 350}, # 0 = Truthful
+#   "error": None
+# }
+
+# # Text Response 2 (Truthful)
+# text_response_02 = {
+#   "sessionId": "session_text_001",
+#   "fileType": "text",
+#    "s3Output": "s3://results/session/text/text_inference.json",
+#   "status": "success",
+#   "metadata": {"confidence": 0.89, "prediction": 0, "tokenCount": 350}
+# }
+
+# # Text Response 3 (Truthful)
+# text_response_03 = {
+#   "sessionId": "session_text_001",
+#   "fileType": "text",
+#   "s3Output": "s3://results/session/text/text_inference.json",
+#   "status": "success",
+#   "metadata": {"confidence": 0.85, "prediction": 0, "tokenCount": 350}
+# }
+
+# # Text Response 4 (Uncertain)
+# text_response_04 = {
 #   "sessionId": "session_text_001",
 #   "fileType": "text",
 #   "status": "success",
-#   "metadata": {"confidence": 0.88, "prediction": 1} 
+#   "metadata": {"confidence": 0.55, "prediction": 1, "tokenCount": 230} 
 # }
 
-# # Text Response 6 (Deceptive)
-# text_response_06 = {
-#   "sessionId": "session_text_001",
-#   "fileType": "text",
-#   "status": "success",
-#   "metadata": {"confidence": 0.91, "prediction": 1}
-# }
+# # # Text Response 5 (Deceptive)
+# # text_response_05 = {
+# #   "sessionId": "session_text_001",
+# #   "fileType": "text",
+# #   "status": "success",
+# #   "metadata": {"confidence": 0.88, "prediction": 1} 
+# # }
+
+# # # Text Response 6 (Deceptive)
+# # text_response_06 = {
+# #   "sessionId": "session_text_001",
+# #   "fileType": "text",
+# #   "status": "success",
+# #   "metadata": {"confidence": 0.91, "prediction": 1}
+# # }
 
 
-report_gen = DeceptionReportGenerator(case_id=text_response_01.get("sessionId"), file_name=".docx")
+# report_gen = DeceptionReportGenerator(case_id=text_response_01.get("sessionId"), file_name=".docx")
 
-report_gen.add_chunk(text_response_01) # Chunk 1
-report_gen.add_chunk(text_response_02) # Chunk 2
-report_gen.add_chunk(text_response_03) # Chunk 3
-report_gen.add_chunk(text_response_04) # Chunk 4
-# report_gen.add_chunk(text_response_05) # Chunk 5
-# report_gen.add_chunk(text_response_06) # Chunk 6
+# report_gen.add_chunk(text_response_01) # Chunk 1
+# report_gen.add_chunk(text_response_02) # Chunk 2
+# report_gen.add_chunk(text_response_03) # Chunk 3
+# report_gen.add_chunk(text_response_04) # Chunk 4
+# # report_gen.add_chunk(text_response_05) # Chunk 5
+# # report_gen.add_chunk(text_response_06) # Chunk 6
 
-print(report_gen.generate())
+# print(report_gen.generate())

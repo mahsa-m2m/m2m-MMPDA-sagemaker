@@ -1,5 +1,19 @@
 import json
-import datetime
+from datetime import datetime, timezone
+import os             
+import logging        
+import boto3
+from botocore.exceptions import ClientError 
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+s3_client = boto3.client("s3")
+ddb_client = boto3.client("dynamodb")
+
+TABLE_NAME = os.environ.get("TABLE_NAME", "UploadSessions")
+REPORT_BUCKET = os.environ.get("REPORT_BUCKET", "deception-detection-reports")
+
 
 class DeceptionReportGenerator:
     def __init__(self, case_id, file_name):
@@ -16,37 +30,42 @@ class DeceptionReportGenerator:
         :param inference_result: List containing the inference dict (probs, label)
 
         """
-        # Extract Metadata from API Response
-        self.modality = api_response.get('fileType', 'Unknown').capitalize()
-        metadata = api_response.get('metadata', {}) 
-        duration = metadata.get('durationSeconds', 10)
-        
-        # Extract Prediction
-        # data = str(metadata.get('prediction', '0'))
-        raw_prediction = str(metadata.get('prediction', '0'))
-        confidence = float(metadata.get('confidence', 0.0))
-        
-        # Calculate confidence based on the predicted label
-        # prob_truth = data.get('truthful_prob', 0.0)
-        # prob_decep = data.get('deceptive_prob', 0.0)
 
-        if raw_prediction == '1':
-            pred_label = 'DECEPTIVE'
-        else:
-            pred_label = 'TRUTHFUL'
+        try:
+            # Extract Metadata from API Response
+            self.modality = api_response.get('fileType', 'Unknown').capitalize()
+            metadata = api_response.get('metadata', {}) 
+            duration = metadata.get('durationSeconds', 10)
+            
+            # Extract Prediction
+            # data = str(metadata.get('prediction', '0'))
+            raw_prediction = str(metadata.get('prediction', '0'))
+            confidence = float(metadata.get('confidence', 0.0))
+            
+            # Calculate confidence based on the predicted label
+            # prob_truth = data.get('truthful_prob', 0.0)
+            # prob_decep = data.get('deceptive_prob', 0.0)
 
-        # UNCERTAIN label
-        if confidence < 0.60:
-            pred_label = 'uncertain'
+            if raw_prediction == '1':
+                pred_label = 'DECEPTIVE'
+            else:
+                pred_label = 'TRUTHFUL'
 
-        
-        # Store processed chunk data
-        self.chunks.append({
-            'chunk_id': api_response.get('chunkId'),
-            'duration': duration,
-            'label': pred_label.upper(),
-            'score': confidence
-        })
+            # UNCERTAIN label
+            if confidence < 0.60:
+                pred_label = 'uncertain'
+
+            
+            # Store processed chunk data
+            self.chunks.append({
+                'chunk_id': api_response.get('chunkId'),
+                'duration': duration,
+                'label': pred_label.upper(),
+                'score': confidence
+            })
+
+        except Exception as e:
+            logger.error(f"Error parsing chunk {api_response.get('chunkId', 'unknown')}: {str(e)}")
 
     def generate(self):
         # Sort chunks by ID
@@ -79,7 +98,8 @@ class DeceptionReportGenerator:
 
         # Build Text Report
         lines = []
-        curr_date = datetime.date.today().strftime("%B %d, %Y")
+        # curr_date = datetime.date.today().strftime("%B %d, %Y")
+        curr_date = datetime.now(timezone.utc).strftime("%B %d, %Y")
         
         # Header
         lines.append("Deception Analysis Report")
@@ -146,70 +166,131 @@ class DeceptionReportGenerator:
         
         return "\n".join(lines)
 
-# ==========================================
-# TEST
-# ==========================================
 
-'''
-{"sessionId": "test-session-002",
-"fileType": "tensor",
-"chunkId": "chunk_01", 
-"s3Output": "s3://deception-detection-bucket/results/test-session-002/video/chunk_01/inference.json",
-"status": "success", 
-"metadata": {"originalResolution": {"width": 0, "height": 0}, 
-                "numFrames": 64, 
-                "prediction": "1", 
-                "confidence": 0.8952397108078003}, 
-"error": null}
-'''
+# Upload the file
+def save_to_s3(session_id, report_content):
+    key = f"reports/{session_id}/analysis.txt"
+    s3_client.put_object(Bucket=REPORT_BUCKET, Key=key, Body=report_content)
+    return key
+
+def lambda_handler(event, context):
+    try:
+        logger.info(f"Received event: {json.dumps(event)}")
+        
+        session_id = event.get('session_id')
+        file_name = event.get('file_name', 'unknown')
+        
+        # a list of chunks to be passed in the event
+        chunk_results = event.get('chunk_results', [])
+        
+        if not session_id:
+            raise ValueError("session_id is missing from event")
+
+        report_gen = DeceptionReportGenerator(case_id=session_id, file_name=file_name)
+
+        # Process chunks
+        for chunk in chunk_results:
+            report_gen.add_chunk(chunk)
+
+        # Generate string
+        report_text = report_gen.generate()
+        
+        # save to S3
+        saved_key = save_to_s3(session_id, report_text)
+        logger.info(f"Report saved to {saved_key}")
+
+        # Update DynamoDB
+        ddb_client.update_item(
+            TableName=TABLE_NAME,
+            Key={"session_id": {"S": session_id}},
+            UpdateExpression="SET #status = :s, report_key = :rk",
+            ExpressionAttributeNames={"#status": "status"},
+            ExpressionAttributeValues={
+                ":s": {"S": "COMPLETED"},
+                ":rk": {"S": saved_key}
+            }
+        )
+
+        # JSON response
+        return {
+            "statusCode": 200,
+            "body": json.dumps({
+                "message": "Report generated",
+                "report_s3_key": saved_key
+            })
+        }
+
+    except Exception as e:
+        logger.error(f"Lambda failed: {str(e)}", exc_info=True)
+        return {
+            "statusCode": 500,
+            "body": json.dumps({"error": str(e)})
+        }
+
+# # ==========================================
+# # TEST
+# # ==========================================
+
+# '''
+# {"sessionId": "test-session-002",
+# "fileType": "tensor",
+# "chunkId": "chunk_01", 
+# "s3Output": "s3://deception-detection-bucket/results/test-session-002/video/chunk_01/inference.json",
+# "status": "success", 
+# "metadata": {"originalResolution": {"width": 0, "height": 0}, 
+#                 "numFrames": 64, 
+#                 "prediction": "1", 
+#                 "confidence": 0.8952397108078003}, 
+# "error": null}
+# '''
 
 
-# CHUNK 1 Data (Deceptive)
-response_01 = {
-  "sessionId": "session_123",
-  "fileType": "audio",
-  "chunkId": "chunk_01",
-  "s3Output": "s3://deceptive-detection-bucket/results",
-  "status": "success",
-  "metadata": { "originalResolution": {"width": 1920, "height": 1080},
-                "numFrames": 64, 
-                "prediction": "0", 
-                "confidence": 0.8952397108078003,
-                "durationSeconds": 10 }
-}
+# # CHUNK 1 Data (Deceptive)
+# response_01 = {
+#   "sessionId": "session_123",
+#   "fileType": "audio",
+#   "chunkId": "chunk_01",
+#   "s3Output": "s3://deceptive-detection-bucket/results",
+#   "status": "success",
+#   "metadata": { "originalResolution": {"width": 1920, "height": 1080},
+#                 "numFrames": 64, 
+#                 "prediction": "0", 
+#                 "confidence": 0.8952397108078003,
+#                 "durationSeconds": 10 }
+# }
 
-# CHUNK 2 Data (Truthful)
-response_02 = {
-  "sessionId": "session_123",
-  "fileType": "video",
-  "chunkId": "chunk_02",
-  "s3Output": "s3://deceptive-detection-bucket/results",
-  "status": "success",
-  "metadata": { "originalResolution": {"width": 1920, "height": 1080},
-                "numFrames": 64, 
-                "prediction": "1", 
-                "confidence": 0.8765,
-                "durationSeconds": 10}
-}
+# # CHUNK 2 Data (Truthful)
+# response_02 = {
+#   "sessionId": "session_123",
+#   "fileType": "video",
+#   "chunkId": "chunk_02",
+#   "s3Output": "s3://deceptive-detection-bucket/results",
+#   "status": "success",
+#   "metadata": { "originalResolution": {"width": 1920, "height": 1080},
+#                 "numFrames": 64, 
+#                 "prediction": "1", 
+#                 "confidence": 0.8765,
+#                 "durationSeconds": 10}
+# }
 
-# CHUNK 3 Data (Truthful)
-response_03 = {
-  "sessionId": "session_123",
-  "fileType": "video",
-  "chunkId": "chunk_03",
-  "s3Output": "s3://deceptive-detection-bucket/results",
-  "status": "success",
-  "metadata": { "originalResolution": {"width": 1920, "height": 1080},
-                "numFrames": 64, 
-                "prediction": "1", 
-                "confidence": 0.536,
-                "durationSeconds": 5}
-}
+# # CHUNK 3 Data (Truthful)
+# response_03 = {
+#   "sessionId": "session_123",
+#   "fileType": "video",
+#   "chunkId": "chunk_03",
+#   "s3Output": "s3://deceptive-detection-bucket/results",
+#   "status": "success",
+#   "metadata": { "originalResolution": {"width": 1920, "height": 1080},
+#                 "numFrames": 64, 
+#                 "prediction": "1", 
+#                 "confidence": 0.536,
+#                 "durationSeconds": 5}
+# }
 
-report_gen = DeceptionReportGenerator(case_id=response_01['sessionId'], file_name="interview.mp4")
+# report_gen = DeceptionReportGenerator(case_id=response_01['sessionId'], file_name="interview.mp4")
 
-report_gen.add_chunk(response_01)
-report_gen.add_chunk(response_02)
-report_gen.add_chunk(response_03)
+# report_gen.add_chunk(response_01)
+# report_gen.add_chunk(response_02)
+# report_gen.add_chunk(response_03)
 
-print(report_gen.generate())
+# print(report_gen.generate())

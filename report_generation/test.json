@@ -1,0 +1,36 @@
+{
+    "session_id": "session_123",
+    "file_name": "interview.mp4",
+    "chunk_results": [
+      {
+        "sessionId": "session_123",
+        "fileType": "audio",
+        "chunkId": "chunk_01",
+        "metadata": { 
+            "prediction": "0", 
+            "confidence": 0.895,
+            "durationSeconds": 10 
+        }
+      },
+      {
+        "sessionId": "session_123",
+        "fileType": "video",
+        "chunkId": "chunk_02",
+        "metadata": { 
+            "prediction": "1", 
+            "confidence": 0.876,
+            "durationSeconds": 10
+        }
+      },
+      {
+        "sessionId": "session_123",
+        "fileType": "video",
+        "chunkId": "chunk_03",
+        "metadata": { 
+            "prediction": "1", 
+            "confidence": 0.536,
+            "durationSeconds": 5
+        }
+      }
+    ]
+  }
