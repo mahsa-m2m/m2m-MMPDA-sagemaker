@@ -1,12 +1,14 @@
+#!/usr/bin/env python3
+import os
 import json
+import sys
 import boto3
 import torch
 import librosa
 import numpy as np
 from transformers import Wav2Vec2Processor, Wav2Vec2Model
 import tempfile
-import os
-from typing import Dict, Any
+import traceback
 
 
 class AudioPreprocessingError(Exception):
@@ -19,15 +21,60 @@ def parse_s3_path(s3_path: str) -> tuple:
     parts = s3_path.replace("s3://", "").split("/", 1)
     return parts[0], parts[1]
 
+def download_s3_folder_preserve_structure(s3_client, bucket, prefix, local_dir):
+    os.makedirs(local_dir, exist_ok=True)
+    
+    paginator = s3_client.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+        for obj in page.get("Contents", []):
+            key = obj["Key"]
+            if key.endswith("/"):
+                continue
+            
+            relative_path = key[len(prefix):].lstrip('/')
+            if not relative_path:
+                continue
+                
+            local_file_path = os.path.join(local_dir, relative_path)
+            os.makedirs(os.path.dirname(local_file_path), exist_ok=True)
+            s3_client.download_file(bucket, key, local_file_path)
+
 
 class AudioFeatureExtractor:
-    
-    def __init__(self, model_name: str = "facebook/wav2vec2-base-960h"):
-        self.processor = Wav2Vec2Processor.from_pretrained(model_name)
-        self.model = Wav2Vec2Model.from_pretrained(model_name)
-        self.model.eval()
+    def __init__(self, model_s3_path: str = None):
+        s3_client = boto3.client('s3')
+        
+        # Target sampling rate
         self.target_sr = 16000
-    
+
+        if model_s3_path:
+            # Load processor and model from S3
+            try:
+                model_bucket, model_prefix = parse_s3_path(model_s3_path)
+                model_dir = tempfile.mkdtemp()
+                
+                print(f"Downloading model from S3: {model_s3_path}")
+                download_s3_folder_preserve_structure(
+                    s3_client, model_bucket, model_prefix, model_dir
+                )
+                self.processor = Wav2Vec2Processor.from_pretrained(model_dir)
+                self.model = Wav2Vec2Model.from_pretrained(model_dir)
+                print("Processor and model loaded successfully from S3")
+            except Exception as e:
+                error_trace = traceback.format_exc()
+                print(f"Failed to load model from S3: {str(e)}")
+                print(f"Full traceback:\n{error_trace}")
+                raise AudioPreprocessingError(f"Failed to load model from S3: {str(e)}")
+        else:
+            # Load processor and model from HuggingFace
+            print("Loading processor and model from HuggingFace (no S3 path provided)")
+            model_name = "facebook/wav2vec2-base-960h"
+            self.processor = Wav2Vec2Processor.from_pretrained(model_name)
+            self.model = Wav2Vec2Model.from_pretrained(model_name)
+            print("Processor and model loaded successfully from HuggingFace")
+        
+        self.model.eval()
+
     def _load_audio_from_file(self, audio_path: str) -> np.ndarray:
         """Load audio from regular audio file (.wav, .mp3, etc.)"""
         audio, sr = librosa.load(audio_path, sr=self.target_sr, mono=True)
@@ -41,7 +88,7 @@ class AudioFeatureExtractor:
         {
             'vision_behaviour': tensor,
             'vision_face': tensor,
-            'audio_mel': tensor,        # NOT used by audio inference
+            'audio_mel': tensor,        # NOT used
             'audio_wave': tensor        # USED - raw waveform for Wav2Vec2
         }
         """
@@ -49,7 +96,7 @@ class AudioFeatureExtractor:
             # Load the .pt file
             sample = torch.load(pt_path, map_location='cpu')
             
-            # Extract audio_wave (raw waveform)
+            # Extract audio_wave
             if 'audio_wave' not in sample:
                 raise AudioPreprocessingError(
                     f".pt file missing 'audio_wave' key. Available keys: {list(sample.keys())}"
@@ -133,33 +180,54 @@ class AudioFeatureExtractor:
 
 feature_extractor = None
 
-
 def get_feature_extractor():
+    """
+    Returns an instance of AudioFeatureExtractor.
+    """
     global feature_extractor
     if feature_extractor is None:
         feature_extractor = AudioFeatureExtractor()
     return feature_extractor
 
-
-def lambda_handler(event: Dict[str, Any], context=None) -> Dict[str, Any]:
+def main():
     s3_client = boto3.client('s3')
     
+    session_id = os.environ.get("SESSION_ID", "unknown")
+    chunk_id = os.environ.get("CHUNK_ID", "unknown")
+    s3_input = os.environ.get("S3_INPUT", "")
+    model_s3_path = os.environ.get("MODEL_S3_PATH", "")
+    
+    print(f"Environment variables:")
+    print(f"  SESSION_ID: {session_id}")
+    print(f"  CHUNK_ID: {chunk_id}")
+    print(f"  S3_INPUT: {s3_input}")
+    print(f"  MODEL_S3_PATH: {model_s3_path}")
+    
     try:
-        session_id = event['sessionId']
-        file_type = event['fileType']
-        chunk_id = event['chunkId']
-        s3_input = event['s3Input']
-        metadata = event.get('metadata', {})
+        if not s3_input:
+            raise AudioPreprocessingError("Missing S3_INPUT")
         
         input_bucket, input_key = parse_s3_path(s3_input)
         
-        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp_file:
+        # Determine file extension to preserve it locally
+        _, file_extension = os.path.splitext(input_key)
+        if not file_extension:
+            file_extension = '.wav' # Default 
+            
+        print(f"Downloading file from S3: s3://{input_bucket}/{input_key} with extension {file_extension}")
+        
+        with tempfile.NamedTemporaryFile(suffix=file_extension, delete=False) as tmp_file:
             s3_client.download_file(input_bucket, input_key, tmp_file.name)
             chunk_path = tmp_file.name
         
         try:
-            extractor = get_feature_extractor()
+            print("Initializing AudioFeatureExtractor...")
+            extractor = AudioFeatureExtractor(
+                model_s3_path if model_s3_path else None
+            )
+            print("Extracting features from input...")
             features = extractor.extract(chunk_path)
+            print(f"Features extracted successfully: shape={features.shape}")
             
             embeddings_data = {
                 "features": features.tolist(),
@@ -181,46 +249,70 @@ def lambda_handler(event: Dict[str, Any], context=None) -> Dict[str, Any]:
                 raise S3WriteError(f"Failed to write embeddings: {str(e)}")
             
         finally:
-            os.unlink(chunk_path)
+            if os.path.exists(chunk_path):
+                os.unlink(chunk_path)
         
-        return {
+        output_data = {
             "sessionId": session_id,
-            "fileType": file_type,
+            "fileType": "audio",
             "chunkId": chunk_id,
             "s3Output": s3_output,
             "status": "success",
-            "metadata": metadata,
+            "metadata": {},
             "error": None
         }
+        print(json.dumps(output_data))
+        sys.exit(0)
         
-    except KeyError as e:
-        return {
-            "sessionId": event.get('sessionId', 'unknown'),
-            "fileType": event.get('fileType', 'unknown'),
-            "chunkId": event.get('chunkId', 'unknown'),
+    except AudioPreprocessingError as e:
+        error_trace = traceback.format_exc()
+        print(f"AudioPreprocessingError: {str(e)}", file=sys.stderr)
+        print(f"Full traceback:\n{error_trace}", file=sys.stderr)
+        output_data = {
+            "sessionId": session_id,
+            "fileType": "audio",
+            "chunkId": chunk_id,
             "s3Output": "",
             "status": "failed",
             "metadata": {},
-            "error": f"Missing required field: {str(e)}"
+            "error": str(e),
+            "traceback": error_trace
         }
+        print(json.dumps(output_data), file=sys.stderr)
+        sys.exit(1)
     except S3WriteError as e:
-        return {
-            "sessionId": event.get('sessionId', 'unknown'),
-            "fileType": event.get('fileType', 'unknown'),
-            "chunkId": event.get('chunkId', 'unknown'),
+        error_trace = traceback.format_exc()
+        print(f"S3WriteError: {str(e)}", file=sys.stderr)
+        print(f"Full traceback:\n{error_trace}", file=sys.stderr)
+        output_data = {
+            "sessionId": session_id,
+            "fileType": "audio",
+            "chunkId": chunk_id,
             "s3Output": "",
             "status": "failed",
             "metadata": {},
-            "error": str(e)
+            "error": str(e),
+            "traceback": error_trace
         }
+        print(json.dumps(output_data), file=sys.stderr)
+        sys.exit(1)
     except Exception as e:
-        return {
-            "sessionId": event.get('sessionId', 'unknown'),
-            "fileType": event.get('fileType', 'unknown'),
-            "chunkId": event.get('chunkId', 'unknown'),
+        error_trace = traceback.format_exc()
+        print(f"Unexpected Exception [{type(e).__name__}]: {str(e)}", file=sys.stderr)
+        print(f"Full traceback:\n{error_trace}", file=sys.stderr)
+        output_data = {
+            "sessionId": session_id,
+            "fileType": "audio",
+            "chunkId": chunk_id,
             "s3Output": "",
             "status": "failed",
             "metadata": {},
-            "error": f"AudioPreprocessingError: {str(e)}"
+            "error": f"AudioPreprocessingError: {str(e)}",
+            "traceback": error_trace
         }
+        print(json.dumps(output_data), file=sys.stderr)
+        sys.exit(1)
 
+
+if __name__ == "__main__":
+    main()

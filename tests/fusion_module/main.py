@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # from . import config
 # from .fusionEngine import SoftVotingFusion
-import config
+import fusion_config as config
 from fusionEngine import SoftVotingFusion
 import sys
 import os

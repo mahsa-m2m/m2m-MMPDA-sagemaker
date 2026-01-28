@@ -28,7 +28,7 @@ sys.path.append(os.path.join(current_dir, 'fusion_module'))
 sys.path.append(os.path.join(current_dir, 'preprocessor_audio')) 
 
 
-from preprocessor_audio.preprocessor import AudioFeatureExtractor, get_feature_extractor
+from preprocessor_audio.preprocessor import AudioFeatureExtractor#, get_feature_extractor
 
 from inference_audio.main import BiLSTMAttentionModel, predict as predict_audio
 
@@ -113,7 +113,7 @@ def run_local_test():
 
     # Initialize Preprocessor
     print("   -> Initializing Audio Preprocessor...")
-    audio_extractor = get_feature_extractor()
+    audio_extractor = AudioFeatureExtractor()
 
      # Lists to store results
     y_true = []
@@ -163,18 +163,22 @@ def run_local_test():
 
             # D. AUDIO INFERENCE
             print("---------> audio inference ")
-            pt_data = torch.load(local_pt_path)
-            if 'audio_wave' not in pt_data: raise KeyError("Missing 'audio_wave' in .pt")
+            # pt_data = torch.load(local_pt_path)
+            # if 'audio_wave' not in pt_data: raise KeyError("Missing 'audio_wave' in .pt")
             
-            raw_audio = pt_data['audio_wave']
-            audio_feats = audio_extractor.extract(raw_audio)
+            # raw_audio = pt_data['audio_wave']
+            # audio_feats = audio_extractor.extract(raw_audio)
             
+            audio_feats = audio_extractor.extract(local_pt_path)
+
             a_pred_val, a_conf_val = predict_audio(audio_model, audio_scaler, audio_feats)
             
             audio_mock = {
                 "fileType": "audio", "chunkId": "test", "status": "success",
                 "metadata": {"prediction": str(a_pred_val), "confidence": float(a_conf_val)}
             }
+            # print("================")
+            # print(audio_mock)
 
             # E. FUSION
             print("--------- fusion ---------")
