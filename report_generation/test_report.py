@@ -27,7 +27,8 @@ with patch('boto3.client') as mock_boto:
     
     mock_boto.side_effect = side_effect
     
-    from generator_VA import lambda_handler
+    # from generator_VA import lambda_handler
+    from generator_T import lambda_handler
 
     test_event = {
       "session_id": "session_123",

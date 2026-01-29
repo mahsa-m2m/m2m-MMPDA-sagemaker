@@ -4,6 +4,7 @@ import os
 import logging        
 import boto3
 from botocore.exceptions import ClientError 
+from collections import Counter
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -21,6 +22,7 @@ class DeceptionReportGenerator:
         self.file_name = file_name
         self.chunks = []
         self.modality = "Unknown"
+        self.modality_counts = Counter()
 
     def add_chunk(self, api_response):
         """
@@ -33,7 +35,10 @@ class DeceptionReportGenerator:
 
         try:
             # Extract Metadata from API Response
-            self.modality = api_response.get('fileType', 'Unknown').capitalize()
+            # self.modality = api_response.get('fileType', 'Unknown').capitalize()
+            chunk_modality = api_response.get('fileType', 'Unknown').capitalize()
+            self.modality_counts[chunk_modality] += 1
+
             metadata = api_response.get('metadata', {}) 
             duration = metadata.get('durationSeconds', 10)
             
@@ -68,6 +73,13 @@ class DeceptionReportGenerator:
             logger.error(f"Error parsing chunk {api_response.get('chunkId', 'unknown')}: {str(e)}")
 
     def generate(self):
+
+        if self.modality_counts:
+            # most_common(1) returns a list like [('Video', 5)], we grab the [0][0] element
+            self.modality = self.modality_counts.most_common(1)[0][0]
+        else:
+            self.modality = "Unknown"
+            
         # Sort chunks by ID
         self.chunks.sort(key=lambda x: x['chunk_id'])
 

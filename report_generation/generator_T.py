@@ -175,11 +175,11 @@ class DeceptionReportGenerator:
         lines.append("🟢 Truthful \n🟡 Uncertain \n🔴 Deceptive \n")
         
         # Pattern Logic
-        pattern_str = "Pattern: scattered throughout document"
-        if timeline_icons_list and timeline_icons_list[-1] == "🔴":
-            pattern_str = "Pattern: Deception increases toward end of document"
+        # pattern_str = "Pattern: scattered throughout document"
+        # if timeline_icons_list and timeline_icons_list[-1] == "🔴":
+        #     pattern_str = "Pattern: Deception increases toward end of document"
             
-        lines.append(f"{pattern_str} \n")
+        # lines.append(f"{pattern_str} \n")
 
 
         # Disclaimer
