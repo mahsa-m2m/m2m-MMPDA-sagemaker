@@ -4,6 +4,13 @@ import json
 import sys
 import boto3
 import filetype
+import logging
+from botocore.exceptions import ClientError 
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+s3_client = boto3.client('s3')
 
 class ModalityDetectionError(Exception):
     pass
@@ -13,7 +20,13 @@ class S3ReadError(Exception):
 
 def parse_s3_path(s3_path: str) -> tuple:
     """Splits s3://bucket/key into bucket and key."""
+    if not s3_path.startswith("s3://"):
+        raise ValueError("Invalid S3 URI scheme")
+        
     parts = s3_path.replace("s3://", "").split("/", 1)
+    if len(parts) < 2:
+        raise ValueError("Invalid S3 path format")
+        
     return parts[0], parts[1]
 
 class ModalityDetector:
@@ -29,7 +42,7 @@ class ModalityDetector:
 
         if kind:
             mime = kind.mime
-            print(f"Detected MIME: {mime}")
+            logger.info(f"Detected MIME: {mime}")
             
             if mime.startswith('video'): return 'video'
             if mime.startswith('audio'): return 'audio'
@@ -44,21 +57,19 @@ class ModalityDetector:
 
         return 'unknown'
 
-def main():
-    s3_client = boto3.client('s3')
-    
-    # Environment Variables
-    session_id = os.environ.get("SESSION_ID", "unknown")
-    s3_input = os.environ.get("S3_INPUT", "")
-    
+def lambda_handler(event, context):
     try:
+        logger.info(f"Received event - Check Modality: {json.dumps(event)}")
+        
+        session_id = event.get("sessionId", os.environ.get("SESSION_ID", "unknown"))
+        s3_input = event.get("s3Input", os.environ.get("S3_INPUT", ""))
+        
         # Input Validation
         if not s3_input:
-            raise ModalityDetectionError("Missing S3_INPUT")
+            raise ModalityDetectionError("Missing s3Input in event or environment")
         
         input_bucket, input_key = parse_s3_path(s3_input)
         
-        # We don't download the whole file to temp, only requires the first 2KB. 
         try:
             response = s3_client.get_object(
                 Bucket=input_bucket, 
@@ -66,19 +77,17 @@ def main():
                 Range='bytes=0-2047'
             )
             file_header = response['Body'].read()
-        except Exception as e:
+        except ClientError as e:
+            logger.error(f"AWS S3 Error: {e}")
             raise S3ReadError(f"Failed to read file header from S3: {str(e)}")
-            
-        # Execute Domain Logic
-        try:
-            detector = ModalityDetector()
-            modality = detector.detect(file_header)
-            
-            if modality == 'unknown': ## FATAL ERROR - INPUT IS NOT VALID
-                pass
-                
         except Exception as e:
-            raise ModalityDetectionError(f"Failed to analyze file bytes: {str(e)}")
+            raise S3ReadError(f"General S3 read error: {str(e)}")
+            
+        detector = ModalityDetector()
+        modality = detector.detect(file_header)
+        
+        if modality == 'unknown': 
+            logger.warning(f"Modality detection resulted in 'unknown' for {s3_input}")
         
         # Construct Success Output
         output_data = {
@@ -92,46 +101,45 @@ def main():
             "error": None
         }
         
-        # stdout
-        print(json.dumps(output_data))
-        sys.exit(0)
-        
-    # Error Handling
-    except ModalityDetectionError as e:
-        output_data = {
-            "sessionId": session_id,
-            "s3Input": s3_input,
-            "detectedModality": "unknown",
-            "status": "failed",
-            "metadata": {},
-            "error": str(e)
+        return {
+            "statusCode": 200,
+            "body": json.dumps(output_data)
         }
-        print(json.dumps(output_data), file=sys.stderr)
-        sys.exit(1)
 
-    except S3ReadError as e:
-        output_data = {
-            "sessionId": session_id,
-            "s3Input": s3_input,
-            "detectedModality": "unknown",
+    except (ModalityDetectionError, S3ReadError, ValueError) as e:
+        logger.error(f"Known Error: {str(e)}")
+        error_output = {
+            "sessionId": event.get("sessionId", "unknown"),
             "status": "failed",
-            "metadata": {},
             "error": str(e)
         }
-        print(json.dumps(output_data), file=sys.stderr)
-        sys.exit(1)
+        return {
+            "statusCode": 400, # Bad Request
+            "body": json.dumps(error_output)
+        }
 
     except Exception as e:
-        output_data = {
-            "sessionId": session_id,
-            "s3Input": s3_input,
-            "detectedModality": "unknown",
+        logger.error(f"Unhandled Lambda Exception: {str(e)}", exc_info=True)
+        error_output = {
+            "sessionId": event.get("sessionId", "unknown"),
             "status": "failed",
-            "metadata": {},
-            "error": f"UnhandledException: {str(e)}"
+            "error": "Internal Server Error"
         }
-        print(json.dumps(output_data), file=sys.stderr)
-        sys.exit(1)
+        return {
+            "statusCode": 500, # Internal Error
+            "body": json.dumps(error_output)
+        }
 
-if __name__ == "__main__":
-    main()
+
+
+# test_event = {
+#     "sessionId": "test-123",
+#     "s3Input": "s3://deception-detection-bucket/dataset/audio/deceptive/1000229-1002473.wav"
+# }
+
+# class MockContext:
+#     function_name = "test_modality_detector"
+
+# if __name__ == "__main__":
+#     response = lambda_handler(test_event, MockContext())
+#     print(json.dumps(response, indent=2))
