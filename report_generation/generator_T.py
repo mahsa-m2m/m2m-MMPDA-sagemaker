@@ -30,14 +30,18 @@ class DeceptionReportGenerator:
 
         try:
             # Extract Metadata from API Response
-            self.modality = api_response.get('fileType', 'Text').capitalize()
-            metadata = api_response.get('metadata', {}) 
+            # self.modality = api_response.get('fileType', 'Text').capitalize()
+            # metadata = api_response.get('metadata', {})
+            chunk_modality = api_response.get('primaryModality', 'Text').capitalize()
             
-            token_count = metadata.get('tokenCount', self.chunk_size)
-            
+            # token_count = metadata.get('tokenCount', self.chunk_size)
+            token_count = 400
+
             # Extract Prediction
-            raw_prediction = str(metadata.get('prediction', '0'))
-            confidence = float(metadata.get('confidence', 0.0))
+            # raw_prediction = str(metadata.get('prediction', '0'))
+            # confidence = float(metadata.get('confidence', 0.0))
+            raw_prediction = str(api_response.get('prediction', '0'))
+            confidence = float(api_response.get('confidence', 0.0))
             
             # Logic for Label Mapping (1=Deceptive, 0=Truthful)
             if raw_prediction == '1':
@@ -249,45 +253,53 @@ def lambda_handler(event, context):
             "body": json.dumps({"error": str(e)})
         }
 
-# # ==========================================
-# # TEST
-# # ==========================================
+# # # ==========================================
+# # # TEST
+# # # ==========================================
 
-# # Text Response 1 (Truthful)
 # text_response_01 = {
-#   "sessionId": "session_text_001",
-#   "fileType": "text",
-#   "s3Output": "s3://results/session/text/text_inference.json",
-#   "status": "success",
-#   "metadata": {"confidence": 0.92, "prediction": 0, "tokenCount": 350}, # 0 = Truthful
-#   "error": None
-# }
+#       "primaryModality": "text",
+#       "status": "success",
+#       "confidence": 0.9134287238121033,
+#       "prediction": "1",
+#       "sessionId": "session_d5396f09ee13_1770332044",
+#       "chunkId": "chunk_1"
+#     }
+# # Text Response 1 (Truthful)
+# # text_response_01 = {
+# #   "sessionId": "session_text_001",
+# #   "fileType": "text",
+# #   "s3Output": "s3://results/session/text/text_inference.json",
+# #   "status": "success",
+# #   "metadata": {"confidence": 0.92, "prediction": 0, "tokenCount": 350}, # 0 = Truthful
+# #   "error": None
+# # }
 
-# # Text Response 2 (Truthful)
-# text_response_02 = {
-#   "sessionId": "session_text_001",
-#   "fileType": "text",
-#    "s3Output": "s3://results/session/text/text_inference.json",
-#   "status": "success",
-#   "metadata": {"confidence": 0.89, "prediction": 0, "tokenCount": 350}
-# }
+# # # Text Response 2 (Truthful)
+# # text_response_02 = {
+# #   "sessionId": "session_text_001",
+# #   "fileType": "text",
+# #    "s3Output": "s3://results/session/text/text_inference.json",
+# #   "status": "success",
+# #   "metadata": {"confidence": 0.89, "prediction": 0, "tokenCount": 350}
+# # }
 
-# # Text Response 3 (Truthful)
-# text_response_03 = {
-#   "sessionId": "session_text_001",
-#   "fileType": "text",
-#   "s3Output": "s3://results/session/text/text_inference.json",
-#   "status": "success",
-#   "metadata": {"confidence": 0.85, "prediction": 0, "tokenCount": 350}
-# }
+# # # Text Response 3 (Truthful)
+# # text_response_03 = {
+# #   "sessionId": "session_text_001",
+# #   "fileType": "text",
+# #   "s3Output": "s3://results/session/text/text_inference.json",
+# #   "status": "success",
+# #   "metadata": {"confidence": 0.85, "prediction": 0, "tokenCount": 350}
+# # }
 
-# # Text Response 4 (Uncertain)
-# text_response_04 = {
-#   "sessionId": "session_text_001",
-#   "fileType": "text",
-#   "status": "success",
-#   "metadata": {"confidence": 0.55, "prediction": 1, "tokenCount": 230} 
-# }
+# # # Text Response 4 (Uncertain)
+# # text_response_04 = {
+# #   "sessionId": "session_text_001",
+# #   "fileType": "text",
+# #   "status": "success",
+# #   "metadata": {"confidence": 0.55, "prediction": 1, "tokenCount": 230} 
+# # }
 
 # # # Text Response 5 (Deceptive)
 # # text_response_05 = {
@@ -309,9 +321,11 @@ def lambda_handler(event, context):
 # report_gen = DeceptionReportGenerator(case_id=text_response_01.get("sessionId"), file_name=".docx")
 
 # report_gen.add_chunk(text_response_01) # Chunk 1
-# report_gen.add_chunk(text_response_02) # Chunk 2
-# report_gen.add_chunk(text_response_03) # Chunk 3
-# report_gen.add_chunk(text_response_04) # Chunk 4
+# report_gen.add_chunk(text_response_01) # Chunk 1
+# report_gen.add_chunk(text_response_01) # Chunk 1
+# # report_gen.add_chunk(text_response_02) # Chunk 2
+# # report_gen.add_chunk(text_response_03) # Chunk 3
+# # report_gen.add_chunk(text_response_04) # Chunk 4
 # # report_gen.add_chunk(text_response_05) # Chunk 5
 # # report_gen.add_chunk(text_response_06) # Chunk 6
 
