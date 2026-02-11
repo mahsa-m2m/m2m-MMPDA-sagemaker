@@ -50,7 +50,8 @@ class ModalityDetector:
 
         # If 'filetype' returns None, it might be a plain text file (.txt, .csv)
         try:
-            file_header_bytes.decode('utf-8')
+            # file_header_bytes.decode('utf-8')
+            file_header_bytes.decode('utf-8', errors='ignore')
             return 'text'
         except UnicodeDecodeError:
             pass
@@ -132,14 +133,14 @@ def lambda_handler(event, context):
 
 
 
-# test_event = {
-#     "sessionId": "test-123",
-#     "s3Input": "s3://deception-detection-bucket/dataset/audio/deceptive/1000229-1002473.wav"
-# }
+test_event = {
+    "sessionId": "test-123",
+    "s3Input": "s3://coyote-deception-detection-platform/uploads/session_b107aaefa0a2_1770826888/text/text_deceptive.txt"
+}
 
-# class MockContext:
-#     function_name = "test_modality_detector"
+class MockContext:
+    function_name = "test_modality_detector"
 
-# if __name__ == "__main__":
-#     response = lambda_handler(test_event, MockContext())
-#     print(json.dumps(response, indent=2))
+if __name__ == "__main__":
+    response = lambda_handler(test_event, MockContext())
+    print(json.dumps(response, indent=2))
